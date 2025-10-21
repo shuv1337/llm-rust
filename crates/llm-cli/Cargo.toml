@@ -1,0 +1,25 @@
+[package]
+name = "llm-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+llm-core = { path = "../llm-core" }
+llm-plugin-host = { path = "../llm-plugin-host" }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+crossterm = { version = "0.28", optional = true }
+rpassword = { workspace = true }
+rustyline = "12"
+shell-words = "1.1"
+tempfile = { workspace = true }
+
+[features]
+default = ["crossterm"]
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
