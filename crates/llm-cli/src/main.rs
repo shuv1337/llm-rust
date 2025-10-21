@@ -1,9 +1,10 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use llm_core::{
-    available_models, core_version, execute_prompt, execute_prompt_with_messages,
-    get_default_model, keys_path, list_key_names, load_keys, logs_db_path, prompt_debug_info,
-    resolve_key, save_key, set_default_model, stream_prompt, KeyQuery, MessageRole, ModelInfo,
+    available_models, backup_logs, core_version, execute_prompt, execute_prompt_with_messages,
+    get_default_model, keys_path, list_key_names, list_logs, load_keys, logs_db_path,
+    logs_status, prompt_debug_info, resolve_key, save_key, set_default_model, set_logging_enabled,
+    stream_prompt, ListLogsOptions, LogEntry, KeyQuery, MessageRole, ModelInfo,
     PromptConfig, PromptMessage, StreamSink,
 };
 use llm_plugin_host::load_plugins;
@@ -13,7 +14,7 @@ use shell_words::split as shell_split;
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use tempfile::NamedTempFile;
 use tracing::info;
@@ -219,13 +220,51 @@ struct KeysSetArgs {
 #[derive(Args)]
 struct LogsArgs {
     #[command(subcommand)]
-    command: LogsSubcommand,
+    command: Option<LogsSubcommand>,
 }
 
 #[derive(Subcommand)]
 enum LogsSubcommand {
     /// Output the path to the logs.db file
     Path,
+    /// Show current logging status and summary information
+    Status,
+    /// Backup the logs database to a file
+    Backup(LogsBackupArgs),
+    /// Enable logging for all prompts
+    On,
+    /// Disable logging for all prompts
+    Off,
+    /// List stored log entries
+    List(LogsListArgs),
+}
+
+#[derive(Args)]
+struct LogsBackupArgs {
+    /// Destination file for the backup
+    path: String,
+}
+
+#[derive(Args, Default)]
+struct LogsListArgs {
+    /// Number of entries to show - defaults to 3, use 0 for all
+    #[arg(short = 'n', long = "count")]
+    count: Option<usize>,
+    /// Output logs as JSON
+    #[arg(long = "json")]
+    json: bool,
+    /// Filter by model identifier or alias
+    #[arg(long = "model")]
+    model: Option<String>,
+    /// Search prompt and response text for this substring
+    #[arg(short = 'q', long = "query")]
+    query: Option<String>,
+    /// Alternative path to logs database (hidden flag for compatibility)
+    #[arg(long = "path", hide = true)]
+    path: Option<String>,
+    /// Alternative path to logs database
+    #[arg(long = "database")]
+    database: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -620,13 +659,182 @@ fn handle_keys(args: KeysArgs) -> Result<()> {
 }
 
 fn handle_logs(args: LogsArgs) -> Result<()> {
-    match args.command {
+    let command = args
+        .command
+        .unwrap_or_else(|| LogsSubcommand::List(LogsListArgs::default()));
+    match command {
         LogsSubcommand::Path => {
             let path = logs_db_path()?;
             println!("{}", path.display());
         }
+        LogsSubcommand::Status => {
+            print_logs_status()?;
+        }
+        LogsSubcommand::Backup(backup_args) => {
+            backup_logs_command(backup_args)?;
+        }
+        LogsSubcommand::On => {
+            set_logging_enabled(true)?;
+            println!("Logging enabled for all prompts.");
+        }
+        LogsSubcommand::Off => {
+            set_logging_enabled(false)?;
+            println!("Logging disabled. Prompts will not be recorded.");
+        }
+        LogsSubcommand::List(list_args) => {
+            list_logs_command(list_args)?;
+        }
     }
     Ok(())
+}
+
+fn print_logs_status() -> Result<()> {
+    let status = logs_status()?;
+    if !status.database_exists {
+        let state = if status.logging_enabled { "ON" } else { "OFF" };
+        println!("Logging is {state}.");
+        println!(
+            "No log database found at {}",
+            status.database_path.display()
+        );
+        return Ok(());
+    }
+
+    if status.logging_enabled {
+        println!("Logging is ON for all prompts");
+    } else {
+        println!("Logging is OFF");
+    }
+    println!("Found log database at {}", status.database_path.display());
+    println!(
+        "Number of conversations logged:\t{}",
+        status.conversations
+    );
+    println!("Number of responses logged:\t{}", status.responses);
+    if let Some(size) = status.file_size_bytes {
+        println!(
+            "Database file size:\t\t{}",
+            human_readable_size(size)
+        );
+    }
+    Ok(())
+}
+
+fn backup_logs_command(args: LogsBackupArgs) -> Result<()> {
+    let destination = PathBuf::from(args.path);
+    backup_logs(&destination)?;
+    let size = fs::metadata(&destination).ok().map(|meta| meta.len());
+    if let Some(bytes) = size {
+        println!(
+            "Backed up {} to {}",
+            human_readable_size(bytes),
+            destination.display()
+        );
+    } else {
+        println!("Backed up logs to {}", destination.display());
+    }
+    Ok(())
+}
+
+fn list_logs_command(args: LogsListArgs) -> Result<()> {
+    let LogsListArgs {
+        count,
+        json,
+        model,
+        query,
+        path,
+        database,
+    } = args;
+
+    let mut options = ListLogsOptions::default();
+    match count.unwrap_or(3) {
+        0 => options.limit = None,
+        value => options.limit = Some(value),
+    }
+    options.newest_first = true;
+    options.model = model;
+    options.query = query;
+    options.database_path = database.or(path).map(PathBuf::from);
+
+    let mut entries = list_logs(options)?;
+    if entries.is_empty() {
+        println!("No logs found.");
+        return Ok(());
+    }
+
+    entries.reverse();
+    if json {
+        let json = serde_json::to_string_pretty(&entries)?;
+        println!("{json}");
+        return Ok(());
+    }
+
+    for (index, entry) in entries.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        display_log_entry(entry);
+    }
+    Ok(())
+}
+
+fn display_log_entry(entry: &LogEntry) {
+    let timestamp = entry
+        .datetime_utc
+        .as_deref()
+        .unwrap_or("-- unknown timestamp --");
+    let resolved_suffix = entry
+        .resolved_model
+        .as_deref()
+        .filter(|resolved| !resolved.is_empty() && resolved != &entry.model)
+        .map(|resolved| format!(" (resolved: {resolved})"))
+        .unwrap_or_default();
+    println!(
+        "# {timestamp}    id: {}",
+        entry.id
+    );
+    println!("Model: {}{}", entry.model, resolved_suffix);
+    if let Some(conversation) = entry.conversation_id.as_deref() {
+        println!("Conversation: {conversation}");
+    }
+    if let Some(duration) = entry.duration_ms {
+        println!("Duration: {} ms", duration);
+    }
+    println!(
+        "\nPrompt:\n{}\n",
+        entry.prompt
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .unwrap_or("-- none --")
+    );
+    println!(
+        "Response:\n{}\n",
+        entry
+            .response
+            .as_deref()
+            .filter(|r| !r.is_empty())
+            .unwrap_or("-- none --")
+    );
+    if let Some(input) = entry.input_tokens {
+        if let Some(output) = entry.output_tokens {
+            println!("Token usage: input {} • output {}", input, output);
+        }
+    }
+}
+
+fn human_readable_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 fn list_keys(as_json: bool) -> Result<()> {

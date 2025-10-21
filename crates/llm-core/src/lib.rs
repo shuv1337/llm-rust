@@ -14,10 +14,21 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+mod logs;
 mod providers;
 pub use providers::{MessageRole, PromptMessage, StreamSink};
+pub use logs::{
+    backup_logs,
+    list_logs,
+    logs_enabled,
+    logs_status,
+    set_logging_enabled,
+    ListLogsOptions,
+    LogEntry,
+    LogsStatus,
+};
 
 struct BuiltinModel {
     canonical: &'static str,
@@ -428,6 +439,14 @@ pub fn execute_prompt_with_messages(
 ) -> Result<String> {
     if prompt_stub_enabled() {
         let stub = stub_response_text(last_user_message_content(&messages));
+        let mut request = PromptRequest {
+            model: resolve_model_name(&config)?,
+            messages,
+            temperature: None,
+            max_tokens: None,
+        };
+        apply_prompt_overrides(&mut request, &config);
+        log_prompt_result(&request, &stub, Duration::from_millis(0))?;
         return Ok(stub);
     }
     let request = build_prompt_request_from_messages(messages, &config)?;
@@ -444,6 +463,14 @@ pub fn stream_prompt_with_messages(
         let stub = stub_response_text(last_user_message_content(&messages));
         sink.handle_text_delta(&stub)?;
         sink.handle_done()?;
+        let mut request = PromptRequest {
+            model: resolve_model_name(&config)?,
+            messages,
+            temperature: None,
+            max_tokens: None,
+        };
+        apply_prompt_overrides(&mut request, &config);
+        log_prompt_result(&request, &stub, Duration::from_millis(0))?;
         return Ok(stub);
     }
     let request = build_prompt_request_from_messages(messages, &config)?;
@@ -492,11 +519,15 @@ fn stream_prompt_internal(
     mut external_sink: Option<&mut dyn ProviderStreamSink>,
 ) -> Result<String> {
     if prompt_stub_enabled() {
+        let model = resolve_model_name(&config)?;
+        let mut request = PromptRequest::user_only(model, prompt.to_string());
+        apply_prompt_overrides(&mut request, &config);
         let text = stub_response_text(prompt);
         if let Some(sink) = external_sink.as_deref_mut() {
             sink.handle_text_delta(&text)?;
             sink.handle_done()?;
         }
+        log_prompt_result(&request, &text, Duration::from_millis(0))?;
         return Ok(text);
     }
 
@@ -650,16 +681,12 @@ fn execute_request(
     external_sink: Option<&mut dyn ProviderStreamSink>,
 ) -> Result<String> {
     let provider_id = provider_from_model(&request.model);
-    let mut provider = build_provider(provider_id, &request, config)?;
-    execute_with_provider(&mut *provider, request, external_sink)
-}
-
-fn execute_with_provider(
-    provider: &mut dyn PromptProvider,
-    request: PromptRequest,
-    mut external_sink: Option<&mut dyn ProviderStreamSink>,
-) -> Result<String> {
+    let provider = build_provider(provider_id, &request, config)?;
+    let mut external_sink = external_sink;
+    let request_for_logging = request.clone();
     let mut accumulator = VecStreamSink::new();
+    let start = Instant::now();
+
     if provider.supports_streaming() {
         if let Some(sink) = external_sink.as_deref_mut() {
             let mut tee = TeeStreamSink::new(&mut accumulator, sink);
@@ -676,7 +703,51 @@ fn execute_with_provider(
             sink.handle_done()?;
         }
     }
-    Ok(accumulator.into_string())
+
+    let duration = start.elapsed();
+    let text = accumulator.into_string();
+    log_prompt_result(&request_for_logging, &text, duration)?;
+    Ok(text)
+}
+
+fn log_prompt_result(request: &PromptRequest, response: &str, duration: Duration) -> Result<()> {
+    let (prompt, system) = extract_prompt_and_system(request);
+    let record = logs::LogRecord {
+        model: request.model.clone(),
+        resolved_model: request.model.clone(),
+        prompt,
+        system,
+        prompt_json: None,
+        options_json: None,
+        response: response.to_string(),
+        response_json: None,
+        conversation_id: None,
+        duration_ms: Some(duration.as_millis()),
+        input_tokens: None,
+        output_tokens: None,
+        token_details: None,
+    };
+    logs::record_log_entry(record)?;
+    Ok(())
+}
+
+fn extract_prompt_and_system(request: &PromptRequest) -> (Option<String>, Option<String>) {
+    let mut last_user: Option<String> = None;
+    let mut first_system: Option<String> = None;
+    for message in &request.messages {
+        match message.role {
+            MessageRole::User => {
+                last_user = Some(message.content.clone());
+            }
+            MessageRole::System => {
+                if first_system.is_none() {
+                    first_system = Some(message.content.clone());
+                }
+            }
+            MessageRole::Assistant => {}
+        }
+    }
+    (last_user, first_system)
 }
 
 fn resolve_api_key(provider_id: &str, config: &PromptConfig<'_>) -> Result<String> {

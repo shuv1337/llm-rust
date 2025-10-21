@@ -11,6 +11,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 directories = { workspace = true }
 reqwest = { workspace = true }
+rusqlite = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

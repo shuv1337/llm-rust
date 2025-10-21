@@ -202,6 +202,69 @@ fn keys_get_returns_stored_value() {
 }
 
 #[test]
+fn logs_list_returns_recent_prompt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut prompt = Command::cargo_bin("llm-cli").expect("binary exists");
+    prompt
+        .arg("Hello logging")
+        .env("LLM_PROMPT_STUB", "1")
+        .env("LLM_USER_PATH", tmp.path());
+    prompt.assert().success();
+
+    let mut logs = Command::cargo_bin("llm-cli").expect("binary exists");
+    logs.args(["logs", "list", "--json"])
+        .env("LLM_USER_PATH", tmp.path());
+    let output = logs.assert().success().get_output().stdout.clone();
+    let entries: Vec<Value> = serde_json::from_slice(&output).expect("valid json");
+    assert_eq!(entries.len(), 1);
+    let entry = entries.first().unwrap();
+    assert_eq!(entry["prompt"], Value::String("Hello logging".into()));
+    assert_eq!(
+        entry["response"],
+        Value::String("llm-core stub response to: Hello logging".into())
+    );
+}
+
+#[test]
+fn logs_off_prevents_new_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    // First prompt should be logged
+    Command::cargo_bin("llm-cli")
+        .expect("binary exists")
+        .arg("First prompt")
+        .env("LLM_PROMPT_STUB", "1")
+        .env("LLM_USER_PATH", tmp.path())
+        .assert()
+        .success();
+
+    // Disable logging
+    Command::cargo_bin("llm-cli")
+        .expect("binary exists")
+        .args(["logs", "off"])
+        .env("LLM_USER_PATH", tmp.path())
+        .assert()
+        .success();
+
+    // Second prompt should not be logged
+    Command::cargo_bin("llm-cli")
+        .expect("binary exists")
+        .arg("Second prompt")
+        .env("LLM_PROMPT_STUB", "1")
+        .env("LLM_USER_PATH", tmp.path())
+        .assert()
+        .success();
+
+    let mut logs = Command::cargo_bin("llm-cli").expect("binary exists");
+    logs.args(["logs", "list", "--json"])
+        .env("LLM_USER_PATH", tmp.path());
+    let output = logs.assert().success().get_output().stdout.clone();
+    let entries: Vec<Value> = serde_json::from_slice(&output).expect("valid json");
+    assert_eq!(entries.len(), 1);
+    let entry = entries.first().unwrap();
+    assert_eq!(entry["prompt"], Value::String("First prompt".into()));
+}
+
+#[test]
 fn keys_get_errors_when_missing() {
     let tmp = tempfile::tempdir().unwrap();
     let mut cmd = Command::cargo_bin("llm-cli").unwrap();
