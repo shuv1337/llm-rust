@@ -1,11 +1,12 @@
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use llm_core::{
-    available_models, backup_logs, core_version, execute_prompt, execute_prompt_with_messages,
-    get_default_model, keys_path, list_key_names, list_logs, load_keys, logs_db_path,
-    logs_status, prompt_debug_info, resolve_key, save_key, set_default_model, set_logging_enabled,
-    stream_prompt, ListLogsOptions, LogEntry, KeyQuery, MessageRole, ModelInfo,
-    PromptConfig, PromptMessage, StreamSink,
+    available_models, backup_logs, core_version, execute_prompt_with_messages, get_default_model,
+    keys_path, list_key_names, list_logs, load_keys, logs_db_path, logs_status, prompt_debug_info,
+    resolve_key, save_key, set_default_model, set_logging_enabled, stream_prompt_with_messages,
+    KeyQuery, ListLogsOptions, LogEntry, MessageRole, ModelInfo, PromptConfig, PromptMessage,
+    StreamSink,
 };
 use llm_plugin_host::load_plugins;
 use rpassword::prompt_password;
@@ -39,6 +40,63 @@ struct PromptOptions {
     /// Retry backoff in milliseconds for provider requests
     #[arg(long = "retry-backoff-ms")]
     retry_backoff_ms: Option<u64>,
+    /// Force logging for this invocation even if disabled globally
+    #[arg(long, conflicts_with = "no_log")]
+    log: bool,
+    /// Disable logging for this invocation
+    #[arg(long = "no-log", conflicts_with = "log")]
+    no_log: bool,
+}
+
+impl PromptOptions {
+    fn log_override(&self) -> Option<bool> {
+        if self.log {
+            Some(true)
+        } else if self.no_log {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Args, Clone, Default)]
+struct PromptInputArgs {
+    #[command(flatten)]
+    options: PromptOptions,
+    /// Custom system prompt override
+    #[arg(short, long)]
+    system: Option<String>,
+    /// API key or alias override for this invocation
+    #[arg(long)]
+    key: Option<String>,
+    /// Conversation identifier to associate with this prompt
+    #[arg(short = 'c', long = "conversation")]
+    conversation: Option<String>,
+    /// Optional display name for the conversation
+    #[arg(long = "conversation-name")]
+    conversation_name: Option<String>,
+    /// Override the model recorded for the conversation metadata
+    #[arg(long = "conversation-model")]
+    conversation_model: Option<String>,
+    /// The prompt text to execute
+    #[arg()]
+    prompt: Vec<String>,
+}
+
+fn parse_datetime(raw: &str) -> Result<DateTime<Utc>, String> {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(raw) {
+        return Ok(dt.with_timezone(&Utc));
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        let naive = date
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| format!("Invalid date '{raw}'"))?;
+        return Ok(Utc.from_utc_datetime(&naive));
+    }
+    Err(format!(
+        "Unable to parse datetime '{raw}'. Use RFC3339 or YYYY-MM-DD formats."
+    ))
 }
 
 const CMD_SYSTEM_PROMPT: &str = r#"Return only the command to be executed as a raw string, no string delimiters
@@ -62,11 +120,7 @@ struct Cli {
     command: Option<Command>,
 
     #[command(flatten)]
-    prompt_options: PromptOptions,
-
-    /// Inline prompt to execute when no subcommand is provided.
-    #[arg()]
-    prompt: Vec<String>,
+    prompt_input: PromptInputArgs,
 }
 
 #[derive(Subcommand)]
@@ -90,10 +144,7 @@ enum Command {
 #[derive(Args)]
 struct PromptArgs {
     #[command(flatten)]
-    options: PromptOptions,
-    /// The prompt text to execute
-    #[arg()]
-    prompt: Vec<String>,
+    input: PromptInputArgs,
 }
 
 #[derive(Args)]
@@ -109,6 +160,15 @@ struct CmdArgs {
     /// The natural language description of the desired command
     #[arg()]
     prompt: Vec<String>,
+    /// Conversation identifier to associate with this prompt
+    #[arg(short = 'c', long = "conversation")]
+    conversation: Option<String>,
+    /// Optional display name for the conversation
+    #[arg(long = "conversation-name")]
+    conversation_name: Option<String>,
+    /// Override the model recorded for the conversation metadata
+    #[arg(long = "conversation-model")]
+    conversation_model: Option<String>,
 }
 
 #[derive(Args, Clone, Default)]
@@ -259,6 +319,21 @@ struct LogsListArgs {
     /// Search prompt and response text for this substring
     #[arg(short = 'q', long = "query")]
     query: Option<String>,
+    /// Filter by conversation identifier
+    #[arg(long = "conversation", alias = "cid")]
+    conversation: Option<String>,
+    /// Only include entries with an id greater than this value
+    #[arg(long = "id-gt", conflicts_with = "id_gte")]
+    id_gt: Option<i64>,
+    /// Only include entries with an id greater than or equal to this value
+    #[arg(long = "id-gte", conflicts_with = "id_gt")]
+    id_gte: Option<i64>,
+    /// Only include entries logged on or after this timestamp (RFC3339 or YYYY-MM-DD)
+    #[arg(long = "since", value_parser = parse_datetime)]
+    since: Option<DateTime<Utc>>,
+    /// Only include entries logged before this timestamp
+    #[arg(long = "before", alias = "until", value_parser = parse_datetime)]
+    before: Option<DateTime<Utc>>,
     /// Alternative path to logs database (hidden flag for compatibility)
     #[arg(long = "path", hide = true)]
     path: Option<String>,
@@ -270,9 +345,11 @@ struct LogsListArgs {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing(&cli.logging);
+    let logging = cli.logging.clone();
+    let prompt_input = cli.prompt_input.clone();
     match cli.command {
         Some(Command::Prompt(args)) => {
-            run_prompt(args.prompt, args.options, &cli.logging)?;
+            run_prompt(args.input, &logging)?;
         }
         Some(Command::Plugins(args)) => {
             list_plugins(args.json)?;
@@ -287,24 +364,33 @@ fn main() -> Result<()> {
             handle_logs(args)?;
         }
         Some(Command::Cmd(args)) => {
-            run_cmd(args, &cli.logging)?;
+            run_cmd(args, &logging)?;
         }
         Some(Command::Version(args)) => {
             print_version(args.verbose);
         }
         None => {
-            if cli.prompt.is_empty() {
+            if prompt_input.prompt.is_empty() {
                 Cli::command().print_help()?;
                 println!();
             } else {
-                run_prompt(cli.prompt.clone(), cli.prompt_options.clone(), &cli.logging)?;
+                run_prompt(prompt_input, &logging)?;
             }
         }
     }
     Ok(())
 }
 
-fn run_prompt(words: Vec<String>, options: PromptOptions, logging: &LoggingOptions) -> Result<()> {
+fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
+    let PromptInputArgs {
+        options,
+        system,
+        key,
+        conversation,
+        conversation_name,
+        conversation_model,
+        prompt: words,
+    } = input;
     let prompt = words.join(" ");
     info!(%prompt, "Executing prompt via llm-core");
     let config = PromptConfig {
@@ -313,15 +399,22 @@ fn run_prompt(words: Vec<String>, options: PromptOptions, logging: &LoggingOptio
         max_tokens: options.max_tokens,
         retries: options.retries.map(|v| v as usize),
         retry_backoff_ms: options.retry_backoff_ms,
-        api_key: None,
+        api_key: key.as_deref(),
+        log_override: options.log_override(),
+        conversation_id: conversation.as_deref(),
+        conversation_name: conversation_name.as_deref(),
+        conversation_model: conversation_model
+            .as_deref()
+            .or_else(|| options.model.as_deref()),
     };
     let streaming = !options.no_stream;
     log_prompt_debug(logging, streaming, &config)?;
+    let messages = build_messages(system.as_deref(), &prompt);
     if streaming {
         let mut sink = StdoutStreamSink::default();
-        stream_prompt(&prompt, config, &mut sink)?;
+        stream_prompt_with_messages(messages, config, &mut sink)?;
     } else {
-        let response = execute_prompt(&prompt, config)?;
+        let response = execute_prompt_with_messages(messages, config)?;
         println!("{response}");
     }
     Ok(())
@@ -342,6 +435,13 @@ fn run_cmd(args: CmdArgs, logging: &LoggingOptions) -> Result<()> {
         retries: args.options.retries.map(|v| v as usize),
         retry_backoff_ms: args.options.retry_backoff_ms,
         api_key: args.key.as_deref(),
+        log_override: args.options.log_override(),
+        conversation_id: args.conversation.as_deref(),
+        conversation_name: args.conversation_name.as_deref(),
+        conversation_model: args
+            .conversation_model
+            .as_deref()
+            .or_else(|| args.options.model.as_deref()),
     };
     log_prompt_debug(logging, false, &config)?;
 
@@ -368,20 +468,26 @@ fn run_cmd(args: CmdArgs, logging: &LoggingOptions) -> Result<()> {
     Ok(())
 }
 
-fn build_cmd_messages(system_prompt: &str, user_prompt: &str) -> Vec<PromptMessage> {
+fn build_messages(system_prompt: Option<&str>, user_prompt: &str) -> Vec<PromptMessage> {
     let mut messages = Vec::new();
-    let trimmed_system = system_prompt.trim();
-    if !trimmed_system.is_empty() {
-        messages.push(PromptMessage {
-            role: MessageRole::System,
-            content: trimmed_system.to_string(),
-        });
+    if let Some(system_prompt) = system_prompt {
+        let trimmed_system = system_prompt.trim();
+        if !trimmed_system.is_empty() {
+            messages.push(PromptMessage {
+                role: MessageRole::System,
+                content: trimmed_system.to_string(),
+            });
+        }
     }
     messages.push(PromptMessage {
         role: MessageRole::User,
         content: user_prompt.to_string(),
     });
     messages
+}
+
+fn build_cmd_messages(system_prompt: &str, user_prompt: &str) -> Vec<PromptMessage> {
+    build_messages(Some(system_prompt), user_prompt)
 }
 
 fn edit_command(initial: &str) -> Result<Option<String>> {
@@ -706,16 +812,10 @@ fn print_logs_status() -> Result<()> {
         println!("Logging is OFF");
     }
     println!("Found log database at {}", status.database_path.display());
-    println!(
-        "Number of conversations logged:\t{}",
-        status.conversations
-    );
+    println!("Number of conversations logged:\t{}", status.conversations);
     println!("Number of responses logged:\t{}", status.responses);
     if let Some(size) = status.file_size_bytes {
-        println!(
-            "Database file size:\t\t{}",
-            human_readable_size(size)
-        );
+        println!("Database file size:\t\t{}", human_readable_size(size));
     }
     Ok(())
 }
@@ -742,6 +842,11 @@ fn list_logs_command(args: LogsListArgs) -> Result<()> {
         json,
         model,
         query,
+        conversation,
+        id_gt,
+        id_gte,
+        since,
+        before,
         path,
         database,
     } = args;
@@ -754,18 +859,22 @@ fn list_logs_command(args: LogsListArgs) -> Result<()> {
     options.newest_first = true;
     options.model = model;
     options.query = query;
+    options.conversation_id = conversation;
+    options.id_gt = id_gt;
+    options.id_gte = id_gte;
+    options.since = since;
+    options.before = before;
     options.database_path = database.or(path).map(PathBuf::from);
 
-    let mut entries = list_logs(options)?;
-    if entries.is_empty() {
-        println!("No logs found.");
-        return Ok(());
-    }
-
-    entries.reverse();
+    let entries = list_logs(options)?;
     if json {
         let json = serde_json::to_string_pretty(&entries)?;
         println!("{json}");
+        return Ok(());
+    }
+
+    if entries.is_empty() {
+        println!("No logs found.");
         return Ok(());
     }
 
@@ -789,20 +898,31 @@ fn display_log_entry(entry: &LogEntry) {
         .filter(|resolved| !resolved.is_empty() && resolved != &entry.model)
         .map(|resolved| format!(" (resolved: {resolved})"))
         .unwrap_or_default();
-    println!(
-        "# {timestamp}    id: {}",
-        entry.id
-    );
+    println!("# {timestamp}    id: {}", entry.id);
     println!("Model: {}{}", entry.model, resolved_suffix);
     if let Some(conversation) = entry.conversation_id.as_deref() {
-        println!("Conversation: {conversation}");
+        let name_suffix = entry
+            .conversation_name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .map(|name| format!(" ({name})"))
+            .unwrap_or_default();
+        println!("Conversation: {conversation}{name_suffix}");
+        if let Some(meta_model) = entry
+            .conversation_model
+            .as_deref()
+            .filter(|model| !model.is_empty())
+        {
+            println!("Conversation model: {meta_model}");
+        }
     }
     if let Some(duration) = entry.duration_ms {
         println!("Duration: {} ms", duration);
     }
     println!(
         "\nPrompt:\n{}\n",
-        entry.prompt
+        entry
+            .prompt
             .as_deref()
             .filter(|p| !p.is_empty())
             .unwrap_or("-- none --")

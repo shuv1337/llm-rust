@@ -16,6 +16,7 @@ rpassword = { workspace = true }
 rustyline = "12"
 shell-words = "1.1"
 tempfile = { workspace = true }
+chrono = { workspace = true }
 
 [features]
 default = ["crossterm"]

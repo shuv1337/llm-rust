@@ -10,6 +10,7 @@ use providers::openai::{OpenAIConfig, OpenAIProvider};
 use providers::StreamSink as ProviderStreamSink;
 use providers::{PromptProvider, PromptRequest, VecStreamSink};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -18,17 +19,11 @@ use std::time::{Duration, Instant};
 
 mod logs;
 mod providers;
-pub use providers::{MessageRole, PromptMessage, StreamSink};
 pub use logs::{
-    backup_logs,
-    list_logs,
-    logs_enabled,
-    logs_status,
-    set_logging_enabled,
-    ListLogsOptions,
-    LogEntry,
-    LogsStatus,
+    backup_logs, list_logs, logs_enabled, logs_status, set_logging_enabled, ListLogsOptions,
+    LogEntry, LogsStatus,
 };
+pub use providers::{MessageRole, PromptMessage, StreamSink};
 
 struct BuiltinModel {
     canonical: &'static str,
@@ -386,6 +381,14 @@ pub struct PromptConfig<'a> {
     pub retry_backoff_ms: Option<u64>,
     /// Optional API key override for this request.
     pub api_key: Option<&'a str>,
+    /// Force logging on/off for this invocation.
+    pub log_override: Option<bool>,
+    /// Optional conversation identifier to associate with the response.
+    pub conversation_id: Option<&'a str>,
+    /// Optional conversation name to persist when the ID is provided.
+    pub conversation_name: Option<&'a str>,
+    /// Optional conversation model metadata for the conversation row.
+    pub conversation_model: Option<&'a str>,
 }
 
 impl Default for PromptConfig<'_> {
@@ -397,6 +400,10 @@ impl Default for PromptConfig<'_> {
             retries: None,
             retry_backoff_ms: None,
             api_key: None,
+            log_override: None,
+            conversation_id: None,
+            conversation_name: None,
+            conversation_model: None,
         }
     }
 }
@@ -446,7 +453,7 @@ pub fn execute_prompt_with_messages(
             max_tokens: None,
         };
         apply_prompt_overrides(&mut request, &config);
-        log_prompt_result(&request, &stub, Duration::from_millis(0))?;
+        log_prompt_result(&request, &stub, Duration::from_millis(0), &config)?;
         return Ok(stub);
     }
     let request = build_prompt_request_from_messages(messages, &config)?;
@@ -470,7 +477,7 @@ pub fn stream_prompt_with_messages(
             max_tokens: None,
         };
         apply_prompt_overrides(&mut request, &config);
-        log_prompt_result(&request, &stub, Duration::from_millis(0))?;
+        log_prompt_result(&request, &stub, Duration::from_millis(0), &config)?;
         return Ok(stub);
     }
     let request = build_prompt_request_from_messages(messages, &config)?;
@@ -527,7 +534,7 @@ fn stream_prompt_internal(
             sink.handle_text_delta(&text)?;
             sink.handle_done()?;
         }
-        log_prompt_result(&request, &text, Duration::from_millis(0))?;
+        log_prompt_result(&request, &text, Duration::from_millis(0), &config)?;
         return Ok(text);
     }
 
@@ -706,28 +713,44 @@ fn execute_request(
 
     let duration = start.elapsed();
     let text = accumulator.into_string();
-    log_prompt_result(&request_for_logging, &text, duration)?;
+    log_prompt_result(&request_for_logging, &text, duration, config)?;
     Ok(text)
 }
 
-fn log_prompt_result(request: &PromptRequest, response: &str, duration: Duration) -> Result<()> {
+fn log_prompt_result(
+    request: &PromptRequest,
+    response: &str,
+    duration: Duration,
+    config: &PromptConfig<'_>,
+) -> Result<()> {
+    if matches!(config.log_override, Some(false)) {
+        return Ok(());
+    }
+    let force_logging = matches!(config.log_override, Some(true));
     let (prompt, system) = extract_prompt_and_system(request);
+    let prompt_json = serialize_prompt_messages(&request.messages)?;
+    let options_json = options_metadata_json(config)?;
     let record = logs::LogRecord {
-        model: request.model.clone(),
+        model: config
+            .model
+            .map(|model| model.to_string())
+            .unwrap_or_else(|| request.model.clone()),
         resolved_model: request.model.clone(),
         prompt,
         system,
-        prompt_json: None,
-        options_json: None,
+        prompt_json,
+        options_json,
         response: response.to_string(),
         response_json: None,
-        conversation_id: None,
+        conversation_id: config.conversation_id.map(|s| s.to_string()),
+        conversation_name: config.conversation_name.map(|s| s.to_string()),
+        conversation_model: config.conversation_model.map(|s| s.to_string()),
         duration_ms: Some(duration.as_millis()),
         input_tokens: None,
         output_tokens: None,
         token_details: None,
     };
-    logs::record_log_entry(record)?;
+    logs::record_log_entry(record, force_logging)?;
     Ok(())
 }
 
@@ -748,6 +771,52 @@ fn extract_prompt_and_system(request: &PromptRequest) -> (Option<String>, Option
         }
     }
     (last_user, first_system)
+}
+
+fn serialize_prompt_messages(messages: &[PromptMessage]) -> Result<Option<String>> {
+    if messages.is_empty() {
+        return Ok(None);
+    }
+    let payload: Vec<JsonValue> = messages
+        .iter()
+        .map(|message| {
+            json!({
+                "role": message.role.as_str(),
+                "content": message.content,
+            })
+        })
+        .collect();
+    let serialized = serde_json::to_string(&payload)?;
+    Ok(Some(serialized))
+}
+
+fn options_metadata_json(config: &PromptConfig<'_>) -> Result<Option<String>> {
+    let mut map = JsonMap::new();
+
+    if let Some(model) = config.model {
+        map.insert("model".to_string(), json!(model));
+    }
+    if let Some(temp) = config.temperature {
+        map.insert("temperature".to_string(), json!(temp));
+    }
+    if let Some(max) = config.max_tokens {
+        map.insert("max_tokens".to_string(), json!(max));
+    }
+    if let Some(retries) = config.retries {
+        map.insert("retries".to_string(), json!(retries));
+    }
+    if let Some(backoff) = config.retry_backoff_ms {
+        map.insert("retry_backoff_ms".to_string(), json!(backoff));
+    }
+    if let Some(log_override) = config.log_override {
+        map.insert("log_override".to_string(), json!(log_override));
+    }
+
+    if map.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(JsonValue::Object(map).to_string()))
+    }
 }
 
 fn resolve_api_key(provider_id: &str, config: &PromptConfig<'_>) -> Result<String> {

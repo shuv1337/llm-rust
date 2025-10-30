@@ -1,6 +1,6 @@
 use crate::{logs_db_path, user_dir};
 use anyhow::{bail, Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, types::Value, Connection};
 use serde::Serialize;
 use std::fs;
@@ -17,6 +17,8 @@ pub(crate) struct LogRecord {
     pub response: String,
     pub response_json: Option<String>,
     pub conversation_id: Option<String>,
+    pub conversation_name: Option<String>,
+    pub conversation_model: Option<String>,
     pub duration_ms: Option<u128>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
@@ -42,12 +44,18 @@ pub struct LogEntry {
     pub resolved_model: Option<String>,
     pub prompt: Option<String>,
     pub system: Option<String>,
+    pub prompt_json: Option<String>,
+    pub options_json: Option<String>,
     pub response: Option<String>,
+    pub response_json: Option<String>,
     pub datetime_utc: Option<String>,
     pub conversation_id: Option<String>,
+    pub conversation_name: Option<String>,
+    pub conversation_model: Option<String>,
     pub duration_ms: Option<i64>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
+    pub token_details: Option<String>,
 }
 
 /// Selection criteria for listing logs.
@@ -59,6 +67,10 @@ pub struct ListLogsOptions {
     pub conversation_id: Option<String>,
     pub newest_first: bool,
     pub database_path: Option<PathBuf>,
+    pub id_gt: Option<i64>,
+    pub id_gte: Option<i64>,
+    pub since: Option<DateTime<Utc>>,
+    pub before: Option<DateTime<Utc>>,
 }
 
 /// Return true when logging is enabled (default) and false when disabled.
@@ -143,32 +155,52 @@ pub fn list_logs(options: ListLogsOptions) -> Result<Vec<LogEntry>> {
     let conn = open_database(&path)?;
 
     let mut sql = String::from(
-        "SELECT id, model, resolved_model, prompt, system, response, datetime_utc, \
-         conversation_id, duration_ms, input_tokens, output_tokens \
-         FROM responses",
+        "SELECT responses.id, responses.model, responses.resolved_model, responses.prompt, \
+         responses.system, responses.prompt_json, responses.options_json, responses.response, \
+         responses.response_json, responses.datetime_utc, responses.conversation_id, \
+         conversations.name, conversations.model, responses.duration_ms, \
+         responses.input_tokens, responses.output_tokens, responses.token_details \
+         FROM responses \
+         LEFT JOIN conversations ON conversations.id = responses.conversation_id",
     );
     let mut conditions: Vec<String> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
 
     if let Some(model) = options.model {
-        conditions.push("model = ?".to_string());
+        conditions.push("responses.model = ?".to_string());
         params.push(Value::from(model));
     }
     if let Some(conversation_id) = options.conversation_id {
-        conditions.push("conversation_id = ?".to_string());
+        conditions.push("responses.conversation_id = ?".to_string());
         params.push(Value::from(conversation_id));
     }
+    if let Some(id_gt) = options.id_gt {
+        conditions.push("responses.id > ?".to_string());
+        params.push(Value::from(id_gt));
+    }
+    if let Some(id_gte) = options.id_gte {
+        conditions.push("responses.id >= ?".to_string());
+        params.push(Value::from(id_gte));
+    }
     if let Some(query) = options.query {
-        conditions.push("(prompt LIKE ? OR response LIKE ?)".to_string());
+        conditions.push("(responses.prompt LIKE ? OR responses.response LIKE ?)".to_string());
         let pattern = format!("%{}%", query);
         params.push(Value::from(pattern.clone()));
         params.push(Value::from(pattern));
+    }
+    if let Some(since) = options.since {
+        conditions.push("responses.datetime_utc >= ?".to_string());
+        params.push(Value::from(since.to_rfc3339()));
+    }
+    if let Some(before) = options.before {
+        conditions.push("responses.datetime_utc < ?".to_string());
+        params.push(Value::from(before.to_rfc3339()));
     }
     if !conditions.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&conditions.join(" AND "));
     }
-    sql.push_str(" ORDER BY id ");
+    sql.push_str(" ORDER BY responses.id ");
     sql.push_str(if options.newest_first { "DESC" } else { "ASC" });
 
     if let Some(limit) = options.limit {
@@ -188,12 +220,18 @@ pub fn list_logs(options: ListLogsOptions) -> Result<Vec<LogEntry>> {
                 resolved_model: row.get(2)?,
                 prompt: row.get(3)?,
                 system: row.get(4)?,
-                response: row.get(5)?,
-                datetime_utc: row.get(6)?,
-                conversation_id: row.get(7)?,
-                duration_ms: row.get(8)?,
-                input_tokens: row.get(9)?,
-                output_tokens: row.get(10)?,
+                prompt_json: row.get(5)?,
+                options_json: row.get(6)?,
+                response: row.get(7)?,
+                response_json: row.get(8)?,
+                datetime_utc: row.get(9)?,
+                conversation_id: row.get(10)?,
+                conversation_name: row.get(11)?,
+                conversation_model: row.get(12)?,
+                duration_ms: row.get(13)?,
+                input_tokens: row.get(14)?,
+                output_tokens: row.get(15)?,
+                token_details: row.get(16)?,
             })
         },
     )?;
@@ -206,14 +244,51 @@ pub fn list_logs(options: ListLogsOptions) -> Result<Vec<LogEntry>> {
     Ok(entries)
 }
 
-/// Persist a log record if logging is enabled.
-pub(crate) fn record_log_entry(record: LogRecord) -> Result<()> {
-    if !logs_enabled()? {
+/// Persist a log record if logging is enabled or forced.
+pub(crate) fn record_log_entry(record: LogRecord, force_logging: bool) -> Result<()> {
+    if !force_logging && !logs_enabled()? {
         return Ok(());
     }
     let path = logs_db_path()?;
     let conn = open_database(&path)?;
     let now = Utc::now().to_rfc3339();
+
+    let LogRecord {
+        model,
+        resolved_model,
+        prompt,
+        system,
+        prompt_json,
+        options_json,
+        response,
+        response_json,
+        conversation_id,
+        conversation_name,
+        conversation_model,
+        duration_ms,
+        input_tokens,
+        output_tokens,
+        token_details,
+    } = record;
+
+    if let Some(ref conversation_id_value) = conversation_id {
+        conn.execute(
+            "
+            INSERT INTO conversations (id, name, model)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(id) DO UPDATE SET
+                name = COALESCE(excluded.name, conversations.name),
+                model = COALESCE(excluded.model, conversations.model)
+            ",
+            params![
+                conversation_id_value,
+                conversation_name.as_deref(),
+                conversation_model.as_deref()
+            ],
+        )
+        .context("Failed to upsert conversation metadata")?;
+    }
+
     conn.execute(
         "INSERT INTO responses \
          (model, resolved_model, prompt, system, prompt_json, options_json, \
@@ -221,22 +296,20 @@ pub(crate) fn record_log_entry(record: LogRecord) -> Result<()> {
           input_tokens, output_tokens, token_details) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
-            record.model,
-            record.resolved_model,
-            record.prompt,
-            record.system,
-            record.prompt_json,
-            record.options_json,
-            record.response,
-            record.response_json,
-            record.conversation_id,
-            record
-                .duration_ms
-                .map(|ms| ms.min(i64::MAX as u128) as i64),
+            model,
+            resolved_model,
+            prompt,
+            system,
+            prompt_json,
+            options_json,
+            response,
+            response_json,
+            conversation_id,
+            duration_ms.map(|ms| ms.min(i64::MAX as u128) as i64),
             now,
-            record.input_tokens.map(|v| v as i64),
-            record.output_tokens.map(|v| v as i64),
-            record.token_details,
+            input_tokens.map(|v| v as i64),
+            output_tokens.map(|v| v as i64),
+            token_details,
         ],
     )
     .context("Failed to insert row into logs database")?;
@@ -248,8 +321,8 @@ fn open_database(path: &Path) -> Result<Connection> {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
-    let conn = Connection::open(path)
-        .with_context(|| format!("Failed to open {}", path.display()))?;
+    let conn =
+        Connection::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
     ensure_schema(&conn)?;
     Ok(conn)
 }

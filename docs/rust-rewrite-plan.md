@@ -1,86 +1,53 @@
 # Rust Rewrite TODO
 
-## Meta
-- [x] Create and version the Rust rewrite TODO tracker.
+This document tracks the outstanding work needed to bring the Rust rewrite to feature parity with the Python `llm` CLI and supporting libraries.
 
-## Discovery & Targets
-- [x] Catalogue every CLI command, subcommand, flag, hidden option into a parity matrix with priority and coverage notes.
-  - [x] Capture initial top-level command list (`docs/cli-parity-matrix.md`).
-  - [x] Record built-in command option snapshots (`docs/cli-parity-matrix.md`).
-  - [x] Document installed plugin command trees (`docs/cli-parity-matrix.md`).
-  - [x] Note hidden/path options for advanced usage (`docs/cli-parity-matrix.md`).
-- [x] Audit plugin usage across first-party and third-party packages, recording entry points, dependencies, and hook usage.
-  - [x] Snapshot currently installed plugins and exposed hooks (`docs/plugin-inventory.md`).
-  - [x] Capture plugin dependency requirements and extras (`docs/plugin-inventory.md`).
-  - [x] Summarize runtime behaviors, caching, and CLI additions (`docs/plugin-behaviors.md`).
-- [ ] Profile current performance bottlenecks (CLI startup, streaming latency, SQLite operations) and capture baseline metrics.
-  - [x] Record initial CLI startup timing (`docs/performance-baseline.md`).
-  - [x] Capture plugin enumeration timing (`docs/performance-baseline.md`).
-- [ ] Decide packaging targets and document success criteria for latency, parity, and API compatibility.
-  - [x] Capture current distribution channels and documentation workflow (`docs/current-distribution.md`).
+## CLI Parity
+- [ ] Expand `prompt` to support system prompts, templates, fragments, attachments, tool execution, structured extraction, async runs, conversation continuation, explicit key overrides, usage reporting, and log suppression/force semantics matching Python.
+  - [x] Accept `--system` flag for system prompts when invoking `llm` or `llm prompt`.
+  - [x] Support explicit `--key` overrides for prompt execution (inline or alias).
+  - [x] Allow associating prompts with existing conversations via `--conversation/--conversation-name/--conversation-model`.
+- [ ] Implement `chat` with interactive session UI, conversation history management, tool execution, and streaming controls.
+- [ ] Close `cmd` gaps: align approval workflow, multi-line editing UX, logging toggles, shell safety prompts, and plugin hook integration.
+- [ ] Port `aliases` (list/set/remove/path, query helpers, storage format).
+- [ ] Port collection and embeddings commands: `collections`, `embed`, `embed-models`, `embed-multi`, `similar`, ensuring SQLite schema compatibility and binary payload handling.
+- [ ] Port prompt library helpers: `fragments`, `templates`, `schemas` (including hidden `--path` overrides and DSL tooling).
+- [ ] Implement `tools list` with `--json/--functions` and integrate with native/plugin-provided tools.
+- [ ] Finish `keys` parity by adding alias query flags, secure input UX, masking, and legacy JSON output behavior.
+- [ ] Fill out `logs list` parity: support export flags (`-l`, `-t`, `-s`, `-u`, `-r`, `-x`, `--xl`, etc.), tool/schema filters, rich response metadata, and conversation summaries.
+- [ ] Extend `models` with the `options` subcommand tree, per-provider refresh, async/schema/tool flags, and catalog metadata parity.
+- [ ] Enhance `plugins` command with `--all`, `--hook`, and detailed capability reporting sourced from the plugin bridge.
+- [ ] Restore package management wrappers: `install`, `uninstall`, and plugin-provided commands such as `jq` once the bridge exists.
+- [ ] Wire up plugin CLIs (`anyscale-endpoints`, `gemini`, `grok`, `mistral`, `openai`, `openrouter`, etc.) through the Python bridge or native equivalents.
 
-## Architecture & Scaffolding
-- [ ] Map existing Python modules to Rust crate structure (`core`, `cli`, `plugins`, `storage`, `providers`, `tools`, `python-bridge`).
-  - [x] Draft initial Python → Rust module mapping (`docs/module-mapping.md`).
-  - [x] Outline workspace scaffold and crate responsibilities (`docs/workspace-scaffold.md`).
-- [ ] Finalize foundational crate selections and document configuration/keyring strategy.
-  - [x] Draft foundational crate candidates (`docs/foundational-crates.md`).
-  - [x] Document current configuration and key storage behavior (`docs/config-and-keys.md`).
-- [ ] Specify plugin ABI roadmap covering Rust-native plugins, Python bridge, and installation metadata.
-  - [x] Draft ABI migration outline (`docs/plugin-abi-roadmap.md`).
-- [ ] Define error handling, logging/tracing approach, and structured output formats to retain CLI/library behavior.
-  - [x] Outline error/logging strategy (`docs/error-logging-strategy.md`).
+## Provider, Logging & Telemetry
+- [ ] Capture provider usage metadata (tokens, costs, tool calls) during streaming and non-streaming flows and persist to `logs.db`.
+- [ ] Support conversation persistence (IDs, names, message history) throughout the core library and CLI commands.
+- [ ] Implement tool execution sandboxing, approvals, and schema validation consistent with Python.
+- [ ] Add configurable retries/backoff per provider with environment overrides and telemetry hooks.
+- [ ] Introduce cancellation, timeout, and resource cleanup paths for long-running requests.
 
-## Plugin Ecosystem & Translation
-- [ ] Implement Python plugin host with `pyo3`, including virtualenv management and Pluggy compatibility layer.
-- [ ] Deliver compatibility tests ensuring lifecycle hooks execute correctly for Python plugins.
-- [ ] Build automated translation pipeline to scaffold Rust adapters from Python plugin metadata/AST.
-- [ ] Create developer tooling (`llm migrate-plugin`) to drive translation workflow and track plugin migration status.
-- [ ] Document long-term plugin migration strategy (Rust crate index, signed manifests, compatibility timeline).
-  - [x] Draft plugin bridge + translation roadmap (`docs/plugin-translation-plan.md`).
+## Plugin Ecosystem
+- [ ] Implement the Python plugin bridge with `pyo3`, including environment management, pluggy hook compatibility, and manifest discovery.
+- [ ] Provide native Rust plugin loader APIs and registration interfaces mirroring Python’s lifecycle hooks.
+- [ ] Deliver translation tooling (`llm migrate-plugin`) to scaffold Rust adapters from Python metadata/AST and track migration status.
+- [ ] Build automated tests that exercise real plugins through the bridge (smoke tests plus golden outputs).
+- [ ] Document plugin authoring, migration strategy, signing, and compatibility guarantees.
 
-## Library/API Compatibility
-- [ ] Design Rust library API mirroring critical Python functions and document deliberate differences.
-  - [x] Survey current Python public API (`docs/library-api-survey.md`).
-- [ ] Provide Python wrapper (`pyo3`/`maturin`) that preserves `import llm` behavior with legacy signatures.
-  - [x] Draft Python wrapper integration plan (`docs/python-wrapper-plan.md`).
-- [ ] Write migration guidance for downstream Python consumers, highlighting any deprecated surfaces.
+## Embeddings & Data Stores
+- [ ] Port embeddings database schema, migrations, and query helpers.
+- [ ] Reimplement similarity search, collection management, and multi-file ingestion workflows.
+- [ ] Ensure interoperability with existing Python-created databases (indexes, metadata, binary columns).
 
-## Incremental Implementation
-- [ ] Scaffold Rust workspace and minimal prompt execution path with parity verification against Python CLI.
-  - [x] Create initial workspace skeleton and stub CLI (`rust/` workspace, `llm-cli` -> `llm-core`).
-- [ ] Port configuration, key management, and SQLite schema/migrations with embedded SQL runner.
-  - [x] Implement user directory + key resolution stubs in Rust (`llm-core`, `llm-cli keys`).
-  - [x] Expose logs database path via CLI placeholder (`llm-cli logs path`).
-  - [x] Implement `keys list/get/path/resolve/set` parity with secure input and JSON option (`llm-cli`).
-- [ ] Implement provider abstraction layer with async traits, streaming support, and retries plus mocks.
-  - [x] Draft provider trait design and requirements (`docs/provider-abstraction.md`).
-- [ ] Rebuild prompt execution pipeline (templates, fragments, system prompts, structured extraction) backed by fixtures.
-- [ ] Port embeddings subsystem ensuring database compatibility and similarity search parity.
-- [ ] Re-implement tools execution sandbox with schema validation and plugin-provided tools support.
-- [ ] Integrate plugin loader/bridge including translation outputs and native Rust plugins.
-- [ ] Harden concurrency, cancellation, and resource cleanup paths.
+## Testing & Validation
+- [ ] Derive automated parity tests from the updated CLI matrix (command-level integration, golden outputs, failure cases).
+- [ ] Add streaming-specific tests (chunk timing, SSE/WebSocket mocks).
+- [ ] Establish regression tests for logging, embeddings, tools, and plugin workflows.
+- [ ] Build performance baselines (startup, prompt latency, SQLite operations) and monitor regressions.
+- [ ] Stand up CI covering native builds, plugin bridge (Python) scenarios, formatting, linting, and security checks.
 
-## Testing, CI & Benchmarks
-- [ ] Translate CLI parity matrix into automated tests (unit, integration, golden) comparing Python and Rust CLIs.
-- [ ] Add streaming-specific integration tests using SSE/WebSocket mocks validating chunk timing.
-- [ ] Test plugin bridge with real Python plugins and translation pipeline smoke tests in CI.
-- [ ] Build performance benchmarking suite comparing latency/throughput against Python baseline with regression alerts.
-- [ ] Configure formatting/linting/security checks and cross-platform CI for native and Python-bridged modes.
-  - [x] Draft comprehensive testing/CI plan (`docs/testing-strategy.md`).
-
-## Docs, Tooling & Packaging
-- [ ] Decide doc generation system and update README/Sphinx workflow accordingly.
-  - [x] Document documentation strategy options (`docs/docs-strategy.md`).
-- [ ] Update developer docs for Rust setup, plugin translation guide, and CLI parity table.
-- [ ] Package binaries (e.g., `cargo dist`) and maintain pip wrapper or wheel bundling strategy.
-  - [x] Draft packaging plan across channels (`docs/packaging-plan.md`).
-- [ ] Produce migration guide, plugin author playbook, and release checklist for alpha/beta/GA phases.
-  - [x] Draft migration guide outline (`docs/migration-guide-outline.md`).
-
-## Rollout & Maintenance
-- [ ] Plan staged release timeline (internal alpha, community beta, GA) with feedback channels.
-  - [x] Draft rollout plan (`docs/rollout-plan.md`).
-- [ ] Track parity matrix, API compatibility, and plugin migration status on dashboards.
-- [ ] Communicate deprecation timeline for Python core once parity thresholds are met.
-- [ ] Establish governance for ongoing maintenance, issue triage, and plugin review processes.
+## Packaging & Rollout
+- [ ] Decide binary packaging/distribution strategy (`cargo dist`, installers) plus pip/pyproject wrappers.
+- [ ] Provide a Python wrapper (`import llm`) that delegates to the Rust core while preserving legacy signatures.
+- [ ] Prepare migration guides, release checklist, and communication plan for staged rollout (alpha → GA).
+- [ ] Define governance for issue triage, plugin review, and long-term maintenance once parity is achieved.

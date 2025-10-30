@@ -8,123 +8,95 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` complete.
 ## Command Reference
 
 ### `prompt`
-- Status `[~]` – options captured, needs behavioral notes/tests mapping.
-- Options: `-s/--system`, `-m/--model`, `-d/--database`, `-q/--query`, `-a/--attachment`, `--at/--attachment-type`, `-T/--tool`, `--functions`, `--td/--tools-debug`, `--ta/--tools-approve`, `--cl/--chain-limit`, `-o/--option`, `--schema`, `--schema-multi`, `-f/--fragment`, `--sf/--system-fragment`, `-t/--template`, `-p/--param`, `--no-stream`, `-n/--no-log`, `--log`, `-c/--continue`, `--cid/--conversation`, `--key`, `--save`, `--async`, `-u/--usage`, `-x/--extract`, `--xl/--extract-last`, `-h/--help`.
-- Notes: Supports multimodal attachments, structured extraction, tool execution controls, logging toggles.
+- Status `[~]` – minimal execution path is working but parity gaps remain.
+- Implemented options: `--model`, `--temperature`, `--max-tokens`, `--retries`, `--retry-backoff-ms`, `--no-stream`, `--log`, `--no-log`, `--system`, `--key`, `--conversation`, `--conversation-name`, `--conversation-model`.
+- Outstanding: fragment/template handling, attachments, database/template lookups, tool execution controls, structured extraction, async/save/usage reporting, conversation continuation and logging toggles that mirror Python semantics.
 
 ### `chat`
-- Status `[~]`.
-- Options: `-s/--system`, `-m/--model`, `-c/--continue`, `--cid/--conversation`, `-f/--fragment`, `--sf/--system-fragment`, `-t/--template`, `-p/--param`, `-o/--option`, `-d/--database`, `--no-stream`, `--key`, `-T/--tool`, `--functions`, `--td/--tools-debug`, `--ta/--tools-approve`, `--cl/--chain-limit`, `-h/--help`.
-- Notes: Interactive session UI, shares tooling with `prompt`.
+- Status `[ ]`.
+- Not yet implemented; requires interactive session UI, conversation continuation, and tool integration.
 
 ### `cmd`
 - Status `[~]`.
-- Options: `-m/--model`, `-s/--system`, `--key`, `-h/--help`.
-- Notes: Executes shell commands suggested by model.
+- Implemented options: prompt options above plus `--system`, `--key`, `--conversation`, `--conversation-name`, `--conversation-model`.
+- Outstanding: approval/auto-approve parity, logging toggles beyond `--log/--no-log`, multi-command/tool integrations, plugin hook fidelity, and post-processing UX matching Python.
 
 ### `aliases`
-- Status `[~]`.
-- Subcommands: `list`, `set`, `remove`, `path`.
-- Key options: `list --json`; `set -q/--query`; others standard help.
-- Notes: Maintains alias mapping in `aliases.json`.
+- Status `[ ]`.
+- Subcommands and storage layer not yet ported.
 
 ### `collections`
-- Status `[~]`.
-- Subcommands: `list`, `delete`, `path`.
-- Options: `list -d/--database --json`; `delete -d/--database`; `path`.
-- Notes: Operates on embeddings DB.
+- Status `[ ]`.
+- Embeddings database management commands pending.
 
 ### `embed`
-- Status `[~]`.
-- Options: `-i/--input`, `-m/--model`, `--store`, `-d/--database`, `-c/--content`, `--binary`, `--metadata`, `-f/--format`, `-h/--help`.
-- Notes: Inserts or returns embeddings.
+- Status `[ ]`.
+- Embeddings generation/store/retrieval pipeline not yet implemented.
 
 ### `embed-models`
-- Status `[~]`.
-- Subcommands: `list`, `default`.
-- Options: `list -q/--query`; `default --remove-default`.
+- Status `[ ]`.
+- Needs model catalogue, default management, and parity flags.
 
 ### `embed-multi`
-- Status `[~]`.
-- Options: `--format`, `--files <dir pattern>`, `--encoding`, `--binary`, `--sql`, `--attach <alias file>`, `--batch-size`, `--prefix`, `-m/--model`, `--prepend`, `--store`, `-d/--database`, `-h/--help`.
-- Notes: Handles CSV/TSV/JSON/SQL/files ingestion workflows.
+- Status `[ ]`.
+- Bulk ingestion workflows (files/SQL/etc.) not yet available.
 
 ### `fragments`
-- Status `[~]`.
-- Subcommands: `list`, `set`, `remove`, `show`, `loaders`.
-- Options: `list -q/--query --aliases --json`; others standard.
-- Notes: Fragment storage for prompt reuse.
+- Status `[ ]`.
+- Fragment CRUD and loader discovery pending.
 
 ### `templates`
-- Status `[~]`.
-- Subcommands: `list`, `show`, `edit`, `path`, `loaders`.
-- Notes: Template filesystem directory management.
+- Status `[ ]`.
+- Template commands (list/show/edit/path/loaders) not yet ported.
 
 ### `schemas`
-- Status `[~]`.
-- Subcommands: `list`, `show`, `dsl`.
-- Options: `list -d/--database -q/--query --full --json --nl`; `show -d/--database`; `dsl --multi`.
-- Hidden options: `--path` override for `list` and `show`.
-- Notes: JSON schema registry and DSL translator.
+- Status `[ ]`.
+- Schema registry, DSL tooling, and hidden path overrides outstanding.
 
 ### `similar`
-- Status `[~]`.
-- Options: `-i/--input`, `-c/--content`, `--binary`, `-n/--number`, `-p/--plain`, `-d/--database`, `--prefix`, `-h/--help`.
-- Notes: Cosine similarity search in collections.
+- Status `[ ]`.
+- Cosine similarity search and related options not yet exposed.
 
 ### `tools`
-- Status `[~]`.
-- Subcommands: `list`.
-- Options: `list --json --functions`.
-- Notes: Lists registered tools, supports ad-hoc function registration.
+- Status `[ ]`.
+- Tool listing and function export commands pending native/plugin integration.
 
 ### `keys`
 - Status `[~]`.
-- Subcommands: `list`, `get`, `set`, `path`.
-- Options: `set --value`; others standard.
-- Notes: Manages `keys.json`.
+- Implemented subcommands: `list`, `get`, `set`, `path`, `resolve`.
+- Outstanding: alias query helpers (`set -q`), secure input UX parity, masking options, and any extended JSON output semantics.
 
 ### `logs`
 - Status `[~]`.
-- Subcommands: `list`, `backup`, `on`, `off`, `status`, `path`.
-- Key options: `list` includes filters `-n`, `-d`, `-m`, `-q`, `-f`, `-T`, `--tools`, `--schema`, `--schema-multi`, `-l`, data extraction flags, `-t`, `-s`, `-u`, `-r`, `-x`, `--xl`, `-c`, `--cid`, `--id-gt`, `--id-gte`, `--json`, `-e`.
-- Hidden options: `logs list --path` to target custom DB file.
-- Notes: Central log exploration CLI.
+- Implemented subcommands: `list`, `backup`, `on`, `off`, `status`, `path`.
+- Implemented filters: `--count/--json/--model/--query/--conversation/--id-gt/--id-gte/--since/--before/--database` (plus hidden `--path`).
+- Outstanding: tool/schema extraction flags, usage/token metadata population, export helpers, conversation summaries, and parity output formatting.
 
 ### `models`
 - Status `[~]`.
-- Subcommands: `list`, `default`, `options` (with `list`, `show`, `set`, `clear`).
-- Key options: `list --options --async --schemas --tools -q/--query -m/--model`; others recorded above.
+- Implemented subcommands: `list` (with `--json`), `default` (get/set).
+- Outstanding: `models options` tree, per-provider refresh, async/schema/tool flags, and richer catalog metadata.
 
 ### `plugins`
 - Status `[~]`.
-- Options: `--all`, `--hook`, `-h/--help`.
-- Notes: Surfaces plugin metadata.
+- Implemented options: `--json`.
+- Outstanding: `--all`, `--hook`, plugin capability summaries, and integration with Python bridge once available.
 
 ### `install`
-- Status `[~]`.
-- Options: `-U/--upgrade`, `-e/--editable`, `--force-reinstall`, `--no-cache-dir`, `--pre`, `-h/--help`.
-- Notes: Wrapper around pip for shared environment.
+- Status `[ ]`.
+- Pip-wrapper command not yet ported.
 
 ### `uninstall`
-- Status `[~]`.
-- Options: `-y/--yes`, `-h/--help`.
+- Status `[ ]`.
+- Removal workflow pending.
 
 ### `jq`
-- Status `[~]`.
-- Options: `-m/--model`, `-l/--length`, `-o/--output`, `-s/--silent`, `-v/--verbose`, `-h/--help`.
+- Status `[ ]`.
+- Plugin-provided command absent without Python bridge.
 
 ### Plugin-Provided Commands
-- Status `[~]` – snapshot of currently installed plugin CLIs captured; deeper behavior analysis pending.
-- `anyscale-endpoints` – subcommand `refresh`; options standard help.
-- `gemini` – subcommands `models (--key, --method)`, `files (--key)`.
-- `grok` – subcommand `models`.
-- `mistral` – subcommands `models`, `refresh`.
-- `openai` – subcommand `models (--json, --key)`.
-- `openrouter` – subcommands `models (--free, --json)`, `key (--key)`.
-- `cmd` – originates via plugin; documented above.
-- `jq` – provided by plugin; documented above.
-- Next step: inspect plugin packages for additional hidden commands and configuration flags.
+- Status `[ ]`.
+- Requires Python plugin bridge and parity wrappers for `anyscale-endpoints`, `gemini`, `grok`, `mistral`, `openai`, `openrouter`, `cmd`, `jq`, etc.
 
 ## Notes
 - Populate behavioral notes, environment variables, and test references per command.

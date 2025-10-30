@@ -1,12 +1,13 @@
 # Next Steps for Rust Rewrite
 
-1. **Complete SQLite-backed logging pipeline**
-   - Implement the remaining pieces in `llm-core::logs` to read/write SQLite entries and expose them through `list_logs`/`logs_status`.
-   - Wire `llm-cli logs list/status` to the finished core API and add regression tests covering filters, JSON output, and backup behavior.
+1. **Harden SQLite logging and CLI parity**
+   - Persist conversation rows, token usage, and options metadata when writing responses so the schema matches Python's `logs.db`.
+   - Add logging toggles (`--log`/`--no-log`) to `prompt`/`cmd`, align `logs list` filters (conversation IDs, id thresholds, time bounds), and polish TTY vs `--json` output.
+   - Expand integration coverage for logging on/off sentinel handling, advanced filter combinations, and backup/restore flows.
 
 2. **Enrich provider streaming metadata**
-   - Extend the provider abstraction to emit usage counters, tool calls, and other structured metadata during streaming.
-   - Resolve the TODOs in `stream_prompt_internal`, ensuring metadata flows through both streaming and non-streaming code paths.
+   - Extend the provider abstraction to emit usage counters, tool calls, and structured metadata alongside text deltas.
+   - Surface metadata through `stream_prompt_internal` so both streaming and buffered paths can log usage and populate `LogEntry`.
 
 3. **Prototype the Python plugin bridge**
    - Stand up a `pyo3`-based bridge that can load Python plugins, execute `register_*` hooks, and surface their models/commands.

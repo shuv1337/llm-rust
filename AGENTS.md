@@ -7,7 +7,7 @@ Use this file to resume work on the Rust rewrite of `llm`. It captures the curre
   - `llm-core` (user dir + key storage helpers, logs path stub, provider abstraction with OpenAI/OpenAI-compatible/Anthropic support + retries/alias normalization)
   - `llm-cli` (Clap-based CLI with `prompt`, `plugins`, `keys`, `logs`, `cmd` subcommands)
   - `llm-plugin-host`, `llm-embeddings` (placeholders)
-- CLI parity implemented so far: `keys path/get/list/set/resolve`, `logs path`, `plugins`, `prompt` (provider dispatch w/ OpenAI + Anthropics; prompt options `--model/--temperature/--max-tokens/--retries/--retry-backoff-ms` + `--key` override, streaming on by default with `--no-stream` opt-out), `cmd` (interactive command generation/execution with rustyline + temp editor fallback), `models list/default` (OpenAI + Anthropic catalog + alias support + persisted default).
+- CLI parity implemented so far: `keys path/get/list/set/resolve`, `logs path`, `plugins`, `prompt` (provider dispatch w/ OpenAI + Anthropics; prompt options `--model/--temperature/--max-tokens/--retries/--retry-backoff-ms` + `--key` override + `--system` + conversation flags, streaming on by default with `--no-stream` opt-out), `cmd` (interactive command generation/execution with rustyline + temp editor fallback), `models list/default` (OpenAI + Anthropic catalog + alias support + persisted default).
 - Integration tests (`cargo test`) cover CLI behaviors including `cmd` auto-accept; unit tests in `llm-core` ensure key persistence and default-model validation for new providers.
 
 ## Quick Start Commands
