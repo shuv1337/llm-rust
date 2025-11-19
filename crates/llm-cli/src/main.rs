@@ -2,11 +2,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use llm_core::{
-    available_models, backup_logs, core_version, execute_prompt_with_messages, get_default_model,
-    keys_path, list_key_names, list_logs, load_keys, logs_db_path, logs_status, prompt_debug_info,
-    resolve_key, save_key, set_default_model, set_logging_enabled, stream_prompt_with_messages,
-    KeyQuery, ListLogsOptions, LogEntry, MessageRole, ModelInfo, PromptConfig, PromptMessage,
-    StreamSink,
+    available_models, backup_logs, core_version, detect_mime_from_content, detect_mime_from_path,
+    detect_remote_mime, execute_prompt_with_messages, get_default_model, keys_path, list_key_names,
+    list_logs, load_keys, logs_db_path, logs_status, prompt_debug_info, resolve_key, save_key,
+    set_default_model, set_logging_enabled, stream_prompt_with_messages, Attachment, KeyQuery,
+    ListLogsOptions, LogEntry, MessageRole, ModelInfo, PromptConfig, PromptMessage, StreamSink,
 };
 use llm_plugin_host::load_plugins;
 use rpassword::prompt_password;
@@ -14,7 +14,7 @@ use rustyline::{error::ReadlineError, DefaultEditor};
 use shell_words::split as shell_split;
 use std::env;
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use tempfile::NamedTempFile;
@@ -70,6 +70,17 @@ struct PromptInputArgs {
     /// API key or alias override for this invocation
     #[arg(long)]
     key: Option<String>,
+    /// Attachment path, URL or '-' to read from stdin
+    #[arg(short = 'a', long = "attachment", value_name = "PATH|URL|-")]
+    attachments: Vec<String>,
+    /// Attachment with explicit mimetype (--attachment-type PATH TYPE)
+    #[arg(
+        long = "attachment-type",
+        alias = "at",
+        value_names = ["PATH|URL|-", "MIMETYPE"],
+        num_args = 2
+    )]
+    attachment_types: Vec<String>,
     /// Conversation identifier to associate with this prompt
     #[arg(short = 'c', long = "conversation")]
     conversation: Option<String>,
@@ -386,6 +397,8 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
         options,
         system,
         key,
+        attachments,
+        attachment_types,
         conversation,
         conversation_name,
         conversation_model,
@@ -409,12 +422,13 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
     };
     let streaming = !options.no_stream;
     log_prompt_debug(logging, streaming, &config)?;
+    let resolved_attachments = resolve_prompt_attachments(&attachments, &attachment_types)?;
     let messages = build_messages(system.as_deref(), &prompt);
     if streaming {
         let mut sink = StdoutStreamSink::default();
-        stream_prompt_with_messages(messages, config, &mut sink)?;
+        stream_prompt_with_messages(messages, resolved_attachments, config, &mut sink)?;
     } else {
-        let response = execute_prompt_with_messages(messages, config)?;
+        let response = execute_prompt_with_messages(messages, resolved_attachments, config)?;
         println!("{response}");
     }
     Ok(())
@@ -446,7 +460,7 @@ fn run_cmd(args: CmdArgs, logging: &LoggingOptions) -> Result<()> {
     log_prompt_debug(logging, false, &config)?;
 
     let messages = build_cmd_messages(system_prompt, &prompt);
-    let suggestion = execute_prompt_with_messages(messages, config)?;
+    let suggestion = execute_prompt_with_messages(messages, Vec::new(), config)?;
     let suggestion = suggestion.trim().to_string();
     if suggestion.is_empty() {
         bail!("Model returned an empty command suggestion.");
@@ -972,6 +986,101 @@ fn list_keys(as_json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn resolve_prompt_attachments(
+    attachments: &[String],
+    attachment_types: &[String],
+) -> Result<Vec<Attachment>> {
+    if attachments.is_empty() && attachment_types.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut resolved = Vec::new();
+    let mut stdin_state = StdinAttachmentState::default();
+    for value in attachments {
+        resolved.push(build_attachment_from_source(value, None, &mut stdin_state)?);
+    }
+    if !attachment_types.is_empty() {
+        if attachment_types.len() % 2 != 0 {
+            bail!("each --attachment-type must include a path/URL and a mimetype");
+        }
+        for pair in attachment_types.chunks(2) {
+            let source = pair.get(0).expect("path present");
+            let mimetype = pair.get(1).expect("mimetype present");
+            resolved.push(build_attachment_from_source(
+                source,
+                Some(mimetype),
+                &mut stdin_state,
+            )?);
+        }
+    }
+    Ok(resolved)
+}
+
+fn build_attachment_from_source(
+    value: &str,
+    explicit_type: Option<&str>,
+    stdin_state: &mut StdinAttachmentState,
+) -> Result<Attachment> {
+    if value == "-" {
+        let bytes = stdin_state.read_once()?;
+        let mimetype = explicit_type
+            .map(|value| value.to_string())
+            .or_else(|| detect_mime_from_content(&bytes))
+            .ok_or_else(|| {
+                anyhow!(
+                    "Could not determine mimetype for stdin attachment, supply --attachment-type"
+                )
+            })?;
+        return Ok(Attachment::from_content(bytes, Some(mimetype)));
+    }
+    if value.contains("://") {
+        let mimetype = if let Some(explicit) = explicit_type {
+            Some(explicit.to_string())
+        } else {
+            Some(
+                detect_remote_mime(value)?
+                    .ok_or_else(|| anyhow!("Unable to detect mimetype for {value}"))?,
+            )
+        };
+        return Ok(Attachment::from_url(value.to_string(), mimetype));
+    }
+
+    let path = PathBuf::from(value);
+    if !path.exists() {
+        bail!("Attachment file '{}' does not exist", value);
+    }
+    let canonical = fs::canonicalize(&path)
+        .with_context(|| format!("failed to resolve attachment path {}", path.display()))?;
+    let mimetype = explicit_type
+        .map(|value| value.to_string())
+        .or_else(|| detect_mime_from_path(&canonical))
+        .ok_or_else(|| {
+            anyhow!(
+                "Could not determine mimetype for attachment {}. Use --attachment-type to specify one.",
+                canonical.display()
+            )
+        })?;
+    Ok(Attachment::from_path(canonical, Some(mimetype)))
+}
+
+#[derive(Default)]
+struct StdinAttachmentState {
+    consumed: bool,
+}
+
+impl StdinAttachmentState {
+    fn read_once(&mut self) -> Result<Vec<u8>> {
+        if self.consumed {
+            bail!("Standard input can only be used for a single attachment");
+        }
+        let mut buffer = Vec::new();
+        io::stdin()
+            .read_to_end(&mut buffer)
+            .context("failed to read attachment from stdin")?;
+        self.consumed = true;
+        Ok(buffer)
+    }
 }
 
 #[derive(Default)]

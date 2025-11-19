@@ -17,8 +17,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+mod attachments;
 mod logs;
 mod providers;
+pub use attachments::{
+    detect_mime_from_content, detect_mime_from_path, detect_remote_mime, Attachment,
+};
 pub use logs::{
     backup_logs, list_logs, logs_enabled, logs_status, set_logging_enabled, ListLogsOptions,
     LogEntry, LogsStatus,
@@ -442,6 +446,7 @@ pub fn stream_prompt(
 /// Execute a prompt built from arbitrary message history.
 pub fn execute_prompt_with_messages(
     messages: Vec<PromptMessage>,
+    attachments: Vec<Attachment>,
     config: PromptConfig<'_>,
 ) -> Result<String> {
     if prompt_stub_enabled() {
@@ -449,6 +454,7 @@ pub fn execute_prompt_with_messages(
         let mut request = PromptRequest {
             model: resolve_model_name(&config)?,
             messages,
+            attachments,
             temperature: None,
             max_tokens: None,
         };
@@ -456,13 +462,14 @@ pub fn execute_prompt_with_messages(
         log_prompt_result(&request, &stub, Duration::from_millis(0), &config)?;
         return Ok(stub);
     }
-    let request = build_prompt_request_from_messages(messages, &config)?;
+    let request = build_prompt_request_from_messages(messages, attachments, &config)?;
     execute_request(request, &config, None)
 }
 
 /// Stream a prompt built from arbitrary message history.
 pub fn stream_prompt_with_messages(
     messages: Vec<PromptMessage>,
+    attachments: Vec<Attachment>,
     config: PromptConfig<'_>,
     sink: &mut dyn ProviderStreamSink,
 ) -> Result<String> {
@@ -473,6 +480,7 @@ pub fn stream_prompt_with_messages(
         let mut request = PromptRequest {
             model: resolve_model_name(&config)?,
             messages,
+            attachments,
             temperature: None,
             max_tokens: None,
         };
@@ -480,7 +488,7 @@ pub fn stream_prompt_with_messages(
         log_prompt_result(&request, &stub, Duration::from_millis(0), &config)?;
         return Ok(stub);
     }
-    let request = build_prompt_request_from_messages(messages, &config)?;
+    let request = build_prompt_request_from_messages(messages, attachments, &config)?;
     execute_request(request, &config, Some(sink))
 }
 
@@ -547,12 +555,14 @@ fn stream_prompt_internal(
 
 fn build_prompt_request_from_messages(
     messages: Vec<PromptMessage>,
+    attachments: Vec<Attachment>,
     config: &PromptConfig<'_>,
 ) -> Result<PromptRequest> {
     let model = resolve_model_name(config)?;
     let mut request = PromptRequest {
         model,
         messages,
+        attachments,
         temperature: None,
         max_tokens: None,
     };

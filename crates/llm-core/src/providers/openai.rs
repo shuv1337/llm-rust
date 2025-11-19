@@ -1,5 +1,5 @@
-use super::{PromptCompletion, PromptProvider, PromptRequest, StreamSink};
-use crate::normalize_model_name;
+use super::{MessageRole, PromptCompletion, PromptProvider, PromptRequest, StreamSink};
+use crate::{normalize_model_name, Attachment, PromptMessage};
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::{blocking::Client, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -157,7 +157,7 @@ impl PromptProvider for OpenAIProvider {
     }
 
     fn complete(&self, request: PromptRequest) -> Result<PromptCompletion> {
-        let response = self.request_completion(OpenAIRequest::from_prompt(request))?;
+        let response = self.request_completion(OpenAIRequest::from_prompt(request)?)?;
 
         Ok(PromptCompletion {
             text: response.primary_text()?.to_string(),
@@ -166,7 +166,7 @@ impl PromptProvider for OpenAIProvider {
     }
 
     fn stream(&self, request: PromptRequest, sink: &mut dyn StreamSink) -> Result<()> {
-        let response = self.request(OpenAIRequest::from_prompt(request), true)?;
+        let response = self.request(OpenAIRequest::from_prompt(request)?, true)?;
         let status = response.status();
         if !status.is_success() {
             let body = response
@@ -245,7 +245,44 @@ pub struct OpenAIRequest {
 #[derive(Debug, Serialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    pub content: ChatMessageContent,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum ChatMessageContent {
+    Text(String),
+    Parts(Vec<ChatMessagePart>),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+pub enum ChatMessagePart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    Image { image_url: ImageUrl },
+    #[serde(rename = "input_audio")]
+    InputAudio { input_audio: InputAudio },
+    #[serde(rename = "file")]
+    File { file: FileDescriptor },
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImageUrl {
+    pub url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InputAudio {
+    pub data: String,
+    pub format: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FileDescriptor {
+    pub filename: String,
+    pub file_data: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -297,22 +334,105 @@ fn should_retry_status(status: StatusCode) -> bool {
 }
 
 impl OpenAIRequest {
-    fn from_prompt(request: PromptRequest) -> Self {
-        OpenAIRequest {
+    fn from_prompt(request: PromptRequest) -> Result<Self> {
+        let mut attachment_parts = request
+            .attachments
+            .into_iter()
+            .map(openai_part_from_attachment)
+            .collect::<Result<Vec<_>>>()?;
+        let last_user_index = request
+            .messages
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, msg)| matches!(msg.role, MessageRole::User))
+            .map(|(idx, _)| idx);
+
+        let mut messages = Vec::with_capacity(request.messages.len());
+        for (idx, message) in request.messages.into_iter().enumerate() {
+            let PromptMessage { role, content } = message;
+            let role_str = role.as_str().to_string();
+            if Some(idx) == last_user_index && !attachment_parts.is_empty() {
+                let mut parts = Vec::new();
+                if !content.is_empty() {
+                    parts.push(ChatMessagePart::Text { text: content });
+                }
+                parts.append(&mut attachment_parts);
+                messages.push(ChatMessage {
+                    role: role_str,
+                    content: ChatMessageContent::Parts(parts),
+                });
+            } else {
+                messages.push(ChatMessage {
+                    role: role_str,
+                    content: ChatMessageContent::Text(content),
+                });
+            }
+        }
+
+        if last_user_index.is_none() && !attachment_parts.is_empty() {
+            messages.push(ChatMessage {
+                role: MessageRole::User.as_str().to_string(),
+                content: ChatMessageContent::Parts(attachment_parts),
+            });
+        }
+
+        Ok(OpenAIRequest {
             model: canonical_model_name(&request.model),
-            messages: request
-                .messages
-                .into_iter()
-                .map(|msg| ChatMessage {
-                    role: msg.role.as_str().to_string(),
-                    content: msg.content,
-                })
-                .collect(),
+            messages,
             temperature: request.temperature,
             max_tokens: request.max_tokens,
             stream: None,
-        }
+        })
     }
+}
+
+fn openai_part_from_attachment(attachment: Attachment) -> Result<ChatMessagePart> {
+    let mime = attachment.resolve_type()?;
+    let mut url = attachment.url.clone();
+    let mut base64_cache: Option<String> = None;
+
+    if url.is_none() || mime.starts_with("audio/") {
+        let base64 = attachment.base64_content()?;
+        url = Some(format!("data:{mime};base64,{base64}"));
+        base64_cache = Some(base64);
+    }
+
+    if mime == "application/pdf" {
+        let base64 = match base64_cache {
+            Some(data) => data,
+            None => attachment.base64_content()?,
+        };
+        return Ok(ChatMessagePart::File {
+            file: FileDescriptor {
+                filename: format!("{}.pdf", attachment.id()?),
+                file_data: format!("data:{mime};base64,{base64}"),
+            },
+        });
+    }
+
+    if mime.starts_with("image/") {
+        let final_url = url.expect("image attachments should always resolve to a URL");
+        return Ok(ChatMessagePart::Image {
+            image_url: ImageUrl { url: final_url },
+        });
+    }
+
+    let base64 = match base64_cache {
+        Some(data) => data,
+        None => attachment.base64_content()?,
+    };
+    let format = if mime == "audio/wav" {
+        "wav".to_string()
+    } else {
+        "mp3".to_string()
+    };
+    Ok(ChatMessagePart::InputAudio {
+        input_audio: InputAudio {
+            data: base64,
+            format,
+        },
+    })
 }
 
 fn canonical_model_name(input: &str) -> String {
@@ -326,4 +446,49 @@ fn canonical_model_name(input: &str) -> String {
                 .map(|(_, model)| model.to_string())
         })
         .unwrap_or(normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PromptMessage;
+
+    #[test]
+    fn request_includes_image_attachment_parts() {
+        let request = PromptRequest {
+            model: "openai/gpt-4o-mini".to_string(),
+            messages: vec![PromptMessage {
+                role: MessageRole::User,
+                content: "Describe".to_string(),
+            }],
+            attachments: vec![Attachment::from_content(
+                TINY_PNG.to_vec(),
+                Some("image/png".to_string()),
+            )],
+            temperature: None,
+            max_tokens: None,
+        };
+        let req = OpenAIRequest::from_prompt(request).expect("request");
+        assert_eq!(req.messages.len(), 1);
+        match &req.messages[0].content {
+            ChatMessageContent::Parts(parts) => {
+                assert_eq!(parts.len(), 2);
+                matches!(
+                    parts[0],
+                    ChatMessagePart::Text {
+                        ref text
+                    } if text == "Describe"
+                );
+                match &parts[1] {
+                    ChatMessagePart::Image { image_url } => {
+                        assert!(image_url.url.starts_with("data:image/png;base64,"));
+                    }
+                    other => panic!("unexpected part {:?}", other),
+                }
+            }
+            other => panic!("unexpected content {:?}", other),
+        }
+    }
+
+    const TINY_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\xa6\x00\x00\x01\x1a\x02\x03\x00\x00\x00\xe6\x99\xc4^\x00\x00\x00\tPLTE\xff\xff\xff\x00\xff\x00\xfe\x01\x00\x12t\x01J\x00\x00\x00GIDATx\xda\xed\xd81\x11\x000\x08\xc0\xc0.]\xea\xaf&Q\x89\x04V\xe0>\xf3+\xc8\x91Z\xf4\xa2\x08EQ\x14EQ\x14EQ\x14EQ\xd4B\x91$I3\xbb\xbf\x08EQ\x14EQ\x14EQ\x14E\xd1\xa5\xd4\x17\x91\xc6\x95\x05\x15\x0f\x9f\xc5\t\x9f\xa4\x00\x00\x00\x00IEND\xaeB`\x82";
 }

@@ -1,0 +1,13 @@
+procs:
+  opencode:
+    shell: "opencode"
+  codex:
+    shell: "codex resume --dangerously-bypass-approvals-and-sandbox"
+  claude:
+    shell: "claude --dangerously-skip-permissions"
+  llm-cli:
+    shell: "cargo run -- --help"
+  nvim:
+    shell: "nvim ."
+  zsh:
+    shell: "zsh"

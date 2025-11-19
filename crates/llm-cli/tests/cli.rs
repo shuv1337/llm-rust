@@ -4,6 +4,8 @@ use predicates::prelude::*;
 use serde_json::Value;
 use std::{fs, thread, time::Duration as StdDuration};
 
+const TINY_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\xa6\x00\x00\x01\x1a\x02\x03\x00\x00\x00\xe6\x99\xc4^\x00\x00\x00\tPLTE\xff\xff\xff\x00\xff\x00\xfe\x01\x00\x12t\x01J\x00\x00\x00GIDATx\xda\xed\xd81\x11\x000\x08\xc0\xc0.]\xea\xaf&Q\x89\x04V\xe0>\xf3+\xc8\x91Z\xf4\xa2\x08EQ\x14EQ\x14EQ\x14EQ\xd4B\x91$I3\xbb\xbf\x08EQ\x14EQ\x14EQ\x14E\xd1\xa5\xd4\x17\x91\xc6\x95\x05\x15\x0f\x9f\xc5\t\x9f\xa4\x00\x00\x00\x00IEND\xaeB`\x82";
+
 #[test]
 fn prompt_command_returns_stub_response() {
     let tmp = tempfile::tempdir().unwrap();
@@ -134,6 +136,40 @@ fn prompt_subcommand_accepts_key_alias_override() {
         .env("LLM_USER_PATH", tmp.path());
     cmd.assert().success().stdout(predicate::str::contains(
         "llm-core stub response to: Alias prompt",
+    ));
+}
+
+#[test]
+fn prompt_command_accepts_file_attachment() {
+    let tmp = tempfile::tempdir().unwrap();
+    let attachment_path = tmp.path().join("image.png");
+    fs::write(&attachment_path, TINY_PNG).unwrap();
+
+    let mut cmd = Command::cargo_bin("llm-cli").expect("binary exists");
+    cmd.args([
+        "prompt",
+        "--no-stream",
+        "-a",
+        attachment_path.to_str().unwrap(),
+        "describe file",
+    ])
+    .env("LLM_PROMPT_STUB", "1")
+    .env("LLM_USER_PATH", tmp.path());
+    cmd.assert().success().stdout(predicate::str::contains(
+        "llm-core stub response to: describe file",
+    ));
+}
+
+#[test]
+fn prompt_command_accepts_stdin_attachment() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cmd = Command::cargo_bin("llm-cli").expect("binary exists");
+    cmd.args(["prompt", "--no-stream", "-a", "-", "describe piped content"])
+        .write_stdin(TINY_PNG)
+        .env("LLM_PROMPT_STUB", "1")
+        .env("LLM_USER_PATH", tmp.path());
+    cmd.assert().success().stdout(predicate::str::contains(
+        "llm-core stub response to: describe piped content",
     ));
 }
 

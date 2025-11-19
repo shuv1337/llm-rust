@@ -1,5 +1,6 @@
 //! Provider implementations for prompt execution.
 
+use crate::Attachment;
 use anyhow::Result;
 
 pub mod anthropic;
@@ -35,6 +36,7 @@ impl MessageRole {
 pub struct PromptRequest {
     pub model: String,
     pub messages: Vec<PromptMessage>,
+    pub attachments: Vec<Attachment>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
 }
@@ -47,6 +49,7 @@ impl PromptRequest {
                 role: MessageRole::User,
                 content: user_content,
             }],
+            attachments: Vec::new(),
             temperature: None,
             max_tokens: None,
         }
