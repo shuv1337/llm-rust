@@ -1,1 +1,66 @@
+# Rust build artifacts
 /target/
+**/target/
+
+# Build outputs
+/build/
+/dist/
+/out/
+
+# Temporary files
+/tmp/
+*.tmp
+*.temp
+*.rs.bk
+
+# Environment and local overrides
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.local
+.direnv/
+.envrc
+
+# Secrets and credential material
+keys.json
+*.pem
+*.key
+*.pkcs8
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.der
+*.crt
+*.cer
+*.ovpn
+*.kubeconfig
+*.age
+*.secret
+*.secrets
+secrets.*
+credentials.json
+id_rsa
+id_ed25519
+
+# Local databases and logs
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+
+# Python docs build output
+docs/_build/
+
+# Editor / OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
