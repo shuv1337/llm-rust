@@ -2568,7 +2568,7 @@ fn embed_models_list(args: EmbedModelsListArgs) -> Result<()> {
 }
 
 fn embed_models_default(args: EmbedModelsDefaultArgs) -> Result<()> {
-    // Note: Default embedding model is not persisted yet - this is a placeholder
+    // TODO: persist default embedding model selection in config storage.
     if let Some(model) = args.model {
         let resolved = resolve_embedding_model(&model)
             .map(|s| s.to_string())
@@ -2665,7 +2665,7 @@ fn handle_embed_multi(args: EmbedMultiArgs) -> Result<()> {
         }
     }
 
-    // Process SQL query (placeholder - requires logs DB access)
+    // TODO: support SQL source queries against logs DB for embed-multi.
     if let Some(query) = sql {
         if json_output {
             eprintln!("SQL embedding source is not yet fully implemented");
@@ -3044,12 +3044,12 @@ fn list_logs_command(args: LogsListArgs) -> Result<()> {
         options.with_tool_calls = Some(true);
     }
 
-    // Handle --schema filter (placeholder)
+    // Handle --schema filter
     if let Some(schema_id) = schema {
         options.schema_id = Some(schema_id);
     }
 
-    // Handle --fragment filter (placeholder)
+    // Handle --fragment filter
     if let Some(frag_id) = fragment {
         options.fragment_id = Some(frag_id);
     }
