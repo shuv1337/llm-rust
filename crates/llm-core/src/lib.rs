@@ -84,42 +84,6 @@ const BUILTIN_MODELS: &[BuiltinModel] = &[
         aliases: &["gpt-4o", "4o"],
     },
     BuiltinModel {
-        canonical: "openai/chatgpt-4o-latest",
-        provider: "openai",
-        description: "ChatGPT 4o latest",
-        aliases: &["chatgpt-4o-latest", "chatgpt-4o"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4o-audio-preview",
-        provider: "openai",
-        description: "GPT-4o audio preview",
-        aliases: &["gpt-4o-audio-preview"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4o-audio-preview-2024-12-17",
-        provider: "openai",
-        description: "GPT-4o audio preview (2024-12-17)",
-        aliases: &["gpt-4o-audio-preview-2024-12-17"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4o-audio-preview-2024-10-01",
-        provider: "openai",
-        description: "GPT-4o audio preview (2024-10-01)",
-        aliases: &["gpt-4o-audio-preview-2024-10-01"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4o-mini-audio-preview",
-        provider: "openai",
-        description: "GPT-4o mini audio preview",
-        aliases: &["gpt-4o-mini-audio-preview"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4o-mini-audio-preview-2024-12-17",
-        provider: "openai",
-        description: "GPT-4o mini audio preview (2024-12-17)",
-        aliases: &["gpt-4o-mini-audio-preview-2024-12-17"],
-    },
-    BuiltinModel {
         canonical: "openai/gpt-4.1",
         provider: "openai",
         description: "GPT-4.1 flagship",
@@ -156,12 +120,6 @@ const BUILTIN_MODELS: &[BuiltinModel] = &[
         aliases: &["gpt-4", "4", "gpt4"],
     },
     BuiltinModel {
-        canonical: "openai/gpt-4-32k",
-        provider: "openai",
-        description: "GPT-4 32k",
-        aliases: &["gpt-4-32k", "4-32k"],
-    },
-    BuiltinModel {
         canonical: "openai/gpt-4-1106-preview",
         provider: "openai",
         description: "GPT-4 1106 preview",
@@ -186,18 +144,6 @@ const BUILTIN_MODELS: &[BuiltinModel] = &[
         aliases: &["gpt-4-turbo", "gpt-4-turbo-preview", "4-turbo", "4t"],
     },
     BuiltinModel {
-        canonical: "openai/gpt-4.5-preview-2025-02-27",
-        provider: "openai",
-        description: "GPT-4.5 preview (2025-02-27)",
-        aliases: &["gpt-4.5-preview-2025-02-27"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4.5-preview",
-        provider: "openai",
-        description: "GPT-4.5 preview",
-        aliases: &["gpt-4.5-preview", "gpt-4.5"],
-    },
-    BuiltinModel {
         canonical: "openai/o1",
         provider: "openai",
         description: "o1 reasoning",
@@ -208,18 +154,6 @@ const BUILTIN_MODELS: &[BuiltinModel] = &[
         provider: "openai",
         description: "o1 (2024-12-17)",
         aliases: &["o1-2024-12-17"],
-    },
-    BuiltinModel {
-        canonical: "openai/o1-preview",
-        provider: "openai",
-        description: "o1 preview",
-        aliases: &["o1-preview"],
-    },
-    BuiltinModel {
-        canonical: "openai/o1-mini",
-        provider: "openai",
-        description: "o1 mini",
-        aliases: &["o1-mini"],
     },
     BuiltinModel {
         canonical: "openai/o3",
@@ -282,88 +216,10 @@ const BUILTIN_MODELS: &[BuiltinModel] = &[
         aliases: &["gpt-5.2-2025-12-11", "gpt-5.2"],
     },
     BuiltinModel {
-        canonical: "openai/gpt-5.3-codex",
-        provider: "openai",
-        description: "GPT-5.3 Codex",
-        aliases: &["gpt-5.3-codex"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-3.5-turbo-instruct",
-        provider: "openai",
-        description: "GPT-3.5 Turbo instruct",
-        aliases: &["gpt-3.5-turbo-instruct", "3.5-instruct", "chatgpt-instruct"],
-    },
-    BuiltinModel {
-        canonical: "anthropic/claude-3-opus-20240229",
-        provider: "anthropic",
-        description: "Claude 3 Opus (2024-02-29)",
-        aliases: &[],
-    },
-    BuiltinModel {
-        canonical: "anthropic/claude-3-opus-latest",
-        provider: "anthropic",
-        description: "Claude 3 Opus (latest)",
-        aliases: &["claude-3-opus"],
-    },
-    BuiltinModel {
-        canonical: "anthropic/claude-3-sonnet-latest",
-        provider: "anthropic",
-        description: "Claude 3 Sonnet (latest)",
-        aliases: &["claude-3-sonnet"],
-    },
-    BuiltinModel {
-        canonical: "anthropic/claude-3-sonnet-20240229",
-        provider: "anthropic",
-        description: "Claude 3 Sonnet (2024-02-29)",
-        aliases: &["claude-3-sonnet-20240229"],
-    },
-    BuiltinModel {
-        canonical: "anthropic/claude-3-haiku-latest",
-        provider: "anthropic",
-        description: "Claude 3 Haiku (latest)",
-        aliases: &["claude-3-haiku"],
-    },
-    BuiltinModel {
         canonical: "anthropic/claude-3-haiku-20240307",
         provider: "anthropic",
         description: "Claude 3 Haiku (2024-03-07)",
         aliases: &["claude-3-haiku-20240307"],
-    },
-    BuiltinModel {
-        canonical: "anthropic/claude-3-5-sonnet-latest",
-        provider: "anthropic",
-        description: "Claude 3.5 Sonnet (latest)",
-        aliases: &["claude-3.5-sonnet", "claude-3.5-sonnet-latest"],
-    },
-    BuiltinModel {
-        canonical: "anthropic/claude-3-5-sonnet-20240620",
-        provider: "anthropic",
-        description: "Claude 3.5 Sonnet (2024-06-20)",
-        aliases: &["claude-3-5-sonnet-20240620"],
-    },
-    BuiltinModel {
-        canonical: "anthropic/claude-3-5-sonnet-20241022",
-        provider: "anthropic",
-        description: "Claude 3.5 Sonnet (2024-10-22)",
-        aliases: &["claude-3-5-sonnet-20241022"],
-    },
-    BuiltinModel {
-        canonical: "anthropic/claude-3-5-haiku-latest",
-        provider: "anthropic",
-        description: "Claude 3.5 Haiku (latest)",
-        aliases: &["claude-3.5-haiku"],
-    },
-    BuiltinModel {
-        canonical: "anthropic/claude-3-7-sonnet-latest",
-        provider: "anthropic",
-        description: "Claude 3.7 Sonnet (latest)",
-        aliases: &["claude-3.7-sonnet", "claude-3.7-sonnet-latest"],
-    },
-    BuiltinModel {
-        canonical: "anthropic/claude-3-7-sonnet-20250219",
-        provider: "anthropic",
-        description: "Claude 3.7 Sonnet (2025-02-19)",
-        aliases: &["claude-3-7-sonnet-20250219"],
     },
     BuiltinModel {
         canonical: "anthropic/claude-opus-4-0",
@@ -1473,7 +1329,7 @@ mod tests {
 
             let models = available_models().expect("models");
             assert!(models.iter().any(|m| m.name == "openai/gpt-5.2-2025-12-11"));
-            assert!(models.iter().any(|m| m.name == "openai/gpt-5.3-codex"));
+            assert!(models.iter().any(|m| m.name == "openai/gpt-5"));
             assert!(models
                 .iter()
                 .any(|m| m.name == "anthropic/claude-sonnet-4-6"));
@@ -1535,9 +1391,9 @@ mod tests {
         with_env_lock(|| {
             let tmp = temp_user_dir();
             env::set_var("LLM_USER_PATH", tmp.path());
-            set_default_model("anthropic:claude-3-opus").expect("set default");
+            set_default_model("anthropic:claude-4-opus").expect("set default");
             let stored = get_default_model().expect("stored").unwrap();
-            assert_eq!(stored, "anthropic/claude-3-opus-latest");
+            assert_eq!(stored, "anthropic/claude-opus-4-0");
             env::remove_var("LLM_USER_PATH");
         });
     }
@@ -1736,11 +1592,11 @@ mod tests {
             env::set_var("LLM_USER_PATH", tmp.path());
 
             // Alias using colon syntax target
-            crate::aliases::set_alias("custom", "anthropic:claude-3-opus").expect("set alias");
+            crate::aliases::set_alias("custom", "anthropic:claude-opus-4.6").expect("set alias");
 
             // Should resolve and normalize
             let resolved = normalize_model_name("custom");
-            assert_eq!(resolved, "anthropic/claude-3-opus-latest");
+            assert_eq!(resolved, "anthropic/claude-opus-4-6");
 
             env::remove_var("LLM_USER_PATH");
         });

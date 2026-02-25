@@ -313,11 +313,11 @@ fn models_list_outputs_available_models() {
     assert!(array.iter().any(|m| m["name"] == "openai/gpt-4o-mini"));
     assert!(array
         .iter()
-        .any(|m| m["name"] == "anthropic/claude-3-opus-latest"));
+        .any(|m| m["name"] == "anthropic/claude-opus-4-0"));
     assert!(array
         .iter()
         .any(|m| m["name"] == "openai/gpt-5.2-2025-12-11"));
-    assert!(array.iter().any(|m| m["name"] == "openai/gpt-5.3-codex"));
+    assert!(array.iter().any(|m| m["name"] == "openai/gpt-5"));
     assert!(array
         .iter()
         .any(|m| m["name"] == "anthropic/claude-sonnet-4-6"));
