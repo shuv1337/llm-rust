@@ -628,8 +628,8 @@ struct AnthropicResponse {
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,
-    #[serde(default)]
-    cache_creation_input_tokens: Option<u32>,
+    #[serde(default, rename = "cache_creation_input_tokens")]
+    _cache_creation_input_tokens: Option<u32>,
     #[serde(default)]
     cache_read_input_tokens: Option<u32>,
 }

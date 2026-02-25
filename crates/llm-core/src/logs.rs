@@ -41,6 +41,7 @@ pub(crate) struct LogRecord {
 
 impl LogRecord {
     /// Create a new LogRecord with required fields, all optional fields set to None.
+    #[cfg(test)]
     pub fn new(model: String, resolved_model: String, response: String) -> Self {
         Self {
             model,

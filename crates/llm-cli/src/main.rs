@@ -9,16 +9,16 @@ use llm_core::{
     logs_db_path, logs_status, migrations::generate_response_ulid, prompt_debug_info, query_models,
     remove_alias, resolve_key, save_key, set_alias, set_default_model, set_logging_enabled,
     stream_prompt_with_messages, Attachment, KeyQuery, ListLogsOptions, ListToolsOptions,
-    LogEntry, MessageRole, ModelInfo, PromptConfig, PromptMessage, SchemaEntry, StreamSink,
-    ToolEntry, delete_template, list_template_loaders, list_templates, load_template,
-    save_template, templates_path, Template, TemplateLoader, get_model_options,
-    list_model_options, remove_model_options, set_model_options, ModelOptions,
+    LogEntry, MessageRole, ModelInfo, PromptConfig, PromptMessage, StreamSink,
+    list_template_loaders, list_templates, load_template, save_template, templates_path,
+    get_model_options, list_model_options, remove_model_options, set_model_options,
+    ModelOptions,
 };
 use llm_plugin_host::load_plugins;
 use llm_embeddings::{
     EmbeddingProvider,
-    Collection, EmbedItem, Entry, OpenAIEmbeddingConfig, OpenAIEmbeddingProvider,
-    delete_collection, list_collections, list_embedding_models, resolve_embedding_model,
+    Collection, EmbedItem, Entry, OpenAIEmbeddingProvider, delete_collection, list_collections,
+    list_embedding_models, resolve_embedding_model,
 };
 use rpassword::prompt_password;
 use rustyline::{error::ReadlineError, DefaultEditor};

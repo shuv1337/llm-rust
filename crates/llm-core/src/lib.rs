@@ -22,7 +22,7 @@ pub mod migrations;
 mod attachments;
 mod logs;
 mod model_options;
-mod providers;
+pub mod providers;
 mod templates;
 pub use aliases::{
     aliases_path, get_alias, list_aliases, load_aliases, remove_alias, resolve_user_alias,
