@@ -7,3 +7,16 @@ edition = "2021"
 anyhow = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+toml = "0.8"
+llm-core = { path = "../llm-core" }
+llm-embeddings = { path = "../llm-embeddings" }
+llm-plugin-api = { path = "../llm-plugin-api" }
+
+[features]
+default = []
+plugin-markov = ["dep:llm-plugin-markov"]
+
+[dependencies.llm-plugin-markov]
+path = "../llm-plugin-markov"
+optional = true

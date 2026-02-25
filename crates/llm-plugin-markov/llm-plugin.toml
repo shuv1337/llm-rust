@@ -1,0 +1,17 @@
+[plugin]
+id = "llm-markov"
+version = "0.1.0"
+description = "Deterministic Markov chain text model"
+min_host_version = "1.0.0"
+
+[capabilities]
+models = true
+embedding_models = false
+commands = false
+template_loaders = false
+fragment_loaders = false
+tools = false
+
+[rust]
+crate_name = "llm-plugin-markov"
+entry_type = "llm_plugin_markov::MarkovPlugin"

@@ -3,7 +3,9 @@ resolver = "2"
 members = [
     "crates/llm-core",
     "crates/llm-cli",
+    "crates/llm-plugin-api",
     "crates/llm-plugin-host",
+    "crates/llm-plugin-markov",
     "crates/llm-embeddings",
 ]
 

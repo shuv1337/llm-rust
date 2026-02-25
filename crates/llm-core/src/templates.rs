@@ -4,9 +4,11 @@
 //! `templates/` directory under the user directory. Each template is a
 //! plain text file with the template content.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::user_dir;
 
@@ -22,10 +24,211 @@ pub struct Template {
 /// Information about a template loader.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TemplateLoader {
-    /// The loader name.
+    /// Loader prefix (for `prefix:key` resolution).
     pub name: String,
     /// Description of what the loader does.
     pub description: String,
+}
+
+/// Execution trait implemented by template loaders.
+///
+/// Loaders are selected by prefix when loading `prefix:key` templates.
+pub trait TemplateLoaderImpl: Send + Sync {
+    /// Prefix used to route template lookups (for example: `filesystem`).
+    fn prefix(&self) -> &str;
+
+    /// Load a template for the given key.
+    fn load(&self, key: &str) -> Result<Template>;
+
+    /// Human-readable loader description.
+    fn description(&self) -> &str;
+}
+
+/// Built-in filesystem-backed template loader.
+#[derive(Debug, Default)]
+pub struct FilesystemTemplateLoader;
+
+impl TemplateLoaderImpl for FilesystemTemplateLoader {
+    fn prefix(&self) -> &str {
+        "filesystem"
+    }
+
+    fn load(&self, key: &str) -> Result<Template> {
+        load_template_from_filesystem(key)?.ok_or_else(|| anyhow!("Template '{}' not found", key))
+    }
+
+    fn description(&self) -> &str {
+        "Loads templates from the templates directory"
+    }
+}
+
+/// Dynamic registry for template loaders.
+///
+/// Resolution order:
+/// 1. Builtin loaders
+/// 2. Plugin loaders
+pub struct TemplateLoaderRegistry {
+    builtin: RwLock<HashMap<String, Arc<dyn TemplateLoaderImpl>>>,
+    plugin: RwLock<HashMap<String, Arc<dyn TemplateLoaderImpl>>>,
+    collision_warnings: RwLock<Vec<String>>,
+}
+
+impl Default for TemplateLoaderRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TemplateLoaderRegistry {
+    /// Create an empty loader registry.
+    pub fn new() -> Self {
+        Self {
+            builtin: RwLock::new(HashMap::new()),
+            plugin: RwLock::new(HashMap::new()),
+            collision_warnings: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Register a builtin loader.
+    pub fn register_builtin(&self, loader: Arc<dyn TemplateLoaderImpl>) {
+        let prefix = loader.prefix().to_string();
+        let mut builtin = self.builtin.write().unwrap();
+        if builtin.contains_key(&prefix) {
+            self.record_collision_warning(&format!(
+                "builtin template loader '{}' already registered; replacing",
+                prefix
+            ));
+        }
+        builtin.insert(prefix, loader);
+    }
+
+    /// Register a plugin loader.
+    pub fn register_plugin(&self, loader: Arc<dyn TemplateLoaderImpl>) {
+        let prefix = loader.prefix().to_string();
+
+        {
+            let builtin = self.builtin.read().unwrap();
+            if builtin.contains_key(&prefix) {
+                self.record_collision_warning(&format!(
+                    "plugin attempted to register template loader '{}' which collides with builtin loader; builtin takes precedence",
+                    prefix
+                ));
+            }
+        }
+
+        {
+            let plugin = self.plugin.read().unwrap();
+            if plugin.contains_key(&prefix) {
+                self.record_collision_warning(&format!(
+                    "plugin template loader '{}' already registered; replacing",
+                    prefix
+                ));
+            }
+        }
+
+        let mut plugin = self.plugin.write().unwrap();
+        plugin.insert(prefix, loader);
+    }
+
+    /// Load a template via a specific loader prefix.
+    pub fn load(&self, prefix: &str, key: &str) -> Result<Template> {
+        {
+            let builtin = self.builtin.read().unwrap();
+            if let Some(loader) = builtin.get(prefix) {
+                return loader.load(key);
+            }
+        }
+
+        {
+            let plugin = self.plugin.read().unwrap();
+            if let Some(loader) = plugin.get(prefix) {
+                return loader.load(key);
+            }
+        }
+
+        bail!(
+            "Unknown template loader prefix '{}'. Available loaders: {}",
+            prefix,
+            self.available_prefixes().join(", ")
+        )
+    }
+
+    /// List loader metadata (builtin first, then plugin).
+    pub fn list(&self) -> Vec<TemplateLoader> {
+        let mut loaders = Vec::new();
+
+        {
+            let builtin = self.builtin.read().unwrap();
+            let mut items: Vec<_> = builtin
+                .iter()
+                .map(|(prefix, loader)| TemplateLoader {
+                    name: prefix.clone(),
+                    description: loader.description().to_string(),
+                })
+                .collect();
+            items.sort_by(|a, b| a.name.cmp(&b.name));
+            loaders.extend(items);
+        }
+
+        {
+            let plugin = self.plugin.read().unwrap();
+            let mut items: Vec<_> = plugin
+                .iter()
+                .map(|(prefix, loader)| TemplateLoader {
+                    name: prefix.clone(),
+                    description: loader.description().to_string(),
+                })
+                .collect();
+            items.sort_by(|a, b| a.name.cmp(&b.name));
+            loaders.extend(items);
+        }
+
+        loaders
+    }
+
+    /// Return all available loader prefixes.
+    pub fn available_prefixes(&self) -> Vec<String> {
+        let mut prefixes = Vec::new();
+
+        {
+            let builtin = self.builtin.read().unwrap();
+            prefixes.extend(builtin.keys().cloned());
+        }
+
+        {
+            let plugin = self.plugin.read().unwrap();
+            prefixes.extend(plugin.keys().cloned());
+        }
+
+        prefixes.sort();
+        prefixes.dedup();
+        prefixes
+    }
+
+    /// Return recorded collision warnings.
+    pub fn collision_warnings(&self) -> Vec<String> {
+        self.collision_warnings.read().unwrap().clone()
+    }
+
+    fn record_collision_warning(&self, message: &str) {
+        let mut warnings = self.collision_warnings.write().unwrap();
+        let entry = message.to_string();
+        if !warnings.contains(&entry) {
+            eprintln!("warning: {}", message);
+            warnings.push(entry);
+        }
+    }
+}
+
+static TEMPLATE_LOADER_REGISTRY: OnceLock<TemplateLoaderRegistry> = OnceLock::new();
+
+/// Return the global template loader registry.
+pub fn template_loader_registry() -> &'static TemplateLoaderRegistry {
+    TEMPLATE_LOADER_REGISTRY.get_or_init(|| {
+        let registry = TemplateLoaderRegistry::new();
+        registry.register_builtin(Arc::new(FilesystemTemplateLoader));
+        registry
+    })
 }
 
 /// Return the path to the `templates/` directory within the user directory.
@@ -80,24 +283,27 @@ pub fn list_templates() -> Result<Vec<String>> {
 /// Load a template by name.
 ///
 /// Returns `Ok(Some(Template))` if found, `Ok(None)` if not found.
+///
+/// If `name` uses `prefix:key` syntax, the corresponding loader is used.
 pub fn load_template(name: &str) -> Result<Option<Template>> {
-    let path = template_file_path(name)?;
-    if !path.exists() {
-        return Ok(None);
+    if let Some((prefix, key)) = parse_loader_name(name) {
+        match template_loader_registry().load(prefix, key) {
+            Ok(template) => return Ok(Some(template)),
+            Err(err) => {
+                if err.to_string().contains("not found") {
+                    return Ok(None);
+                }
+                return Err(err);
+            }
+        }
     }
 
-    let content = fs::read_to_string(&path)
-        .with_context(|| format!("Failed to read template: {}", path.display()))?;
-
-    Ok(Some(Template {
-        name: name.to_string(),
-        content,
-    }))
+    load_template_from_filesystem(name)
 }
 
 /// Get a template by name, returning an error if not found.
 pub fn get_template(name: &str) -> Result<Template> {
-    load_template(name)?.ok_or_else(|| anyhow::anyhow!("Template '{}' not found", name))
+    load_template(name)?.ok_or_else(|| anyhow!("Template '{}' not found", name))
 }
 
 /// Save a template to disk.
@@ -148,15 +354,32 @@ fn template_file_path(name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+fn load_template_from_filesystem(name: &str) -> Result<Option<Template>> {
+    let path = template_file_path(name)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read template: {}", path.display()))?;
+
+    Ok(Some(Template {
+        name: name.to_string(),
+        content,
+    }))
+}
+
+fn parse_loader_name(name: &str) -> Option<(&str, &str)> {
+    let (prefix, key) = name.split_once(':')?;
+    if prefix.is_empty() || key.is_empty() {
+        return None;
+    }
+    Some((prefix, key))
+}
+
 /// List available template loaders.
-///
-/// Currently returns the built-in filesystem loader. Plugin-based loaders
-/// would be registered here in future versions.
 pub fn list_template_loaders() -> Vec<TemplateLoader> {
-    vec![TemplateLoader {
-        name: "filesystem".to_string(),
-        description: "Loads templates from the templates directory".to_string(),
-    }]
+    template_loader_registry().list()
 }
 
 #[cfg(test)]
@@ -336,5 +559,70 @@ mod tests {
 
             env::remove_var("LLM_USER_PATH");
         });
+    }
+
+    #[test]
+    fn load_template_with_filesystem_prefix() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            save_template("hello", "world").expect("save");
+            let template = load_template("filesystem:hello")
+                .expect("load")
+                .expect("template");
+            assert_eq!(template.name, "hello");
+            assert_eq!(template.content, "world");
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
+    fn unknown_loader_prefix_errors() {
+        let err = load_template("unknown:thing").expect_err("should fail for unknown prefix");
+        assert!(err.to_string().contains("Unknown template loader prefix"));
+    }
+
+    #[derive(Debug)]
+    struct MockLoader;
+
+    impl TemplateLoaderImpl for MockLoader {
+        fn prefix(&self) -> &str {
+            "mock"
+        }
+
+        fn load(&self, key: &str) -> Result<Template> {
+            Ok(Template {
+                name: key.to_string(),
+                content: "from-mock".to_string(),
+            })
+        }
+
+        fn description(&self) -> &str {
+            "Mock loader"
+        }
+    }
+
+    #[test]
+    fn template_loader_registry_resolves_builtin_then_plugin() {
+        let registry = TemplateLoaderRegistry::new();
+        registry.register_builtin(Arc::new(FilesystemTemplateLoader));
+        registry.register_plugin(Arc::new(MockLoader));
+
+        let prefixes = registry.available_prefixes();
+        assert!(prefixes.contains(&"filesystem".to_string()));
+        assert!(prefixes.contains(&"mock".to_string()));
+    }
+
+    #[test]
+    fn template_loader_registry_detects_collisions() {
+        let registry = TemplateLoaderRegistry::new();
+        registry.register_builtin(Arc::new(MockLoader));
+        registry.register_plugin(Arc::new(MockLoader));
+
+        let warnings = registry.collision_warnings();
+        assert!(!warnings.is_empty());
+        assert!(warnings[0].contains("collides with builtin"));
     }
 }

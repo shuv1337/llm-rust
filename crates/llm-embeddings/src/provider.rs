@@ -389,6 +389,11 @@ fn should_retry_status(status: StatusCode) -> bool {
 // ============================================================================
 
 /// Information about built-in OpenAI embedding models.
+///
+/// This constant is retained for backward compatibility. New code should use
+/// `list_embedding_models()` or `resolve_embedding_model()` which read from
+/// the dynamic `EmbeddingRegistry`.
+#[deprecated(note = "Use registry::global_registry() instead")]
 pub const BUILTIN_OPENAI_MODELS: &[(&str, &[&str], usize)] = &[
     ("text-embedding-3-small", &["3-small"], 1536),
     ("text-embedding-3-large", &["3-large"], 3072),
@@ -396,15 +401,26 @@ pub const BUILTIN_OPENAI_MODELS: &[(&str, &[&str], usize)] = &[
 ];
 
 /// Resolve a model name to its canonical form.
+///
+/// Checks both builtin and plugin models registered in the global registry.
+/// Returns `None` if no matching model is found.
+///
+/// Note: For full plugin model support, use `registry::global_registry().resolve()`
+/// directly, as this function returns `&'static str` which only works for
+/// known builtin models.
 pub fn resolve_embedding_model(name: &str) -> Option<&'static str> {
-    let name_lower = name.to_ascii_lowercase();
-    for (canonical, aliases, _) in BUILTIN_OPENAI_MODELS {
-        if name_lower == canonical.to_ascii_lowercase() {
-            return Some(canonical);
-        }
-        for alias in *aliases {
-            if name_lower == alias.to_ascii_lowercase() {
-                return Some(canonical);
+    // Use the registry for resolution
+    let registry = crate::registry::global_registry();
+    if let Some(model_id) = registry.resolve(name) {
+        // Convert to static str by matching against known builtins
+        // This maintains backward compatibility with existing code expecting &'static str
+        match model_id.as_str() {
+            "text-embedding-3-small" => return Some("text-embedding-3-small"),
+            "text-embedding-3-large" => return Some("text-embedding-3-large"),
+            "text-embedding-ada-002" => return Some("text-embedding-ada-002"),
+            _ => {
+                // Plugin models can't return static str, so we fall through to None
+                // Callers needing plugin model support should use registry.resolve() directly
             }
         }
     }
@@ -412,19 +428,10 @@ pub fn resolve_embedding_model(name: &str) -> Option<&'static str> {
 }
 
 /// List all available embedding models.
+///
+/// Returns models from the global registry (builtin first, then plugin).
 pub fn list_embedding_models() -> Vec<EmbeddingModelInfo> {
-    BUILTIN_OPENAI_MODELS
-        .iter()
-        .map(|(model, aliases, dims)| EmbeddingModelInfo {
-            model_id: model.to_string(),
-            name: model.to_string(),
-            provider: "openai".to_string(),
-            dimensions: Some(*dims),
-            supports_binary: false,
-            supports_text: true,
-            aliases: aliases.iter().map(|s| s.to_string()).collect(),
-        })
-        .collect()
+    crate::registry::global_registry().list()
 }
 
 // ============================================================================

@@ -28,11 +28,11 @@ This plan **depends on** the following milestones being complete or in-flight fr
 | M1: `aliases.json`, `model_options.json` support | This plan's M2 | ✅ Done | `crates/llm-core/src/aliases.rs`, `model_options.rs` |
 | M2a: Tool/function/schema execution in providers | This plan's M2 | ✅ Done | `crates/llm-core/src/providers/mod.rs` (types exist) |
 | M2a: Conversation continuation (`-c`/`--cid`) | This plan's M2 | ✅ Done | `crates/llm-cli/src/main.rs` |
-| **Template loader execution trait** | This plan's M2 | ❌ Not started | See "Prerequisite tasks" below |
-| **Fragment loader abstraction** | This plan's M2 | ❌ Not started | See "Prerequisite tasks" below |
-| **Dynamic `ProviderRegistry` in llm-core** | This plan's M1 | ❌ Not started | See "Prerequisite tasks" below |
-| **Dynamic `CommandRegistry` in llm-cli** | This plan's M1 | ❌ Not started | See "Prerequisite tasks" below |
-| **Dynamic `EmbeddingRegistry` in llm-embeddings** | This plan's M1 | ❌ Not started | See "Prerequisite tasks" below |
+| **Template loader execution trait** | This plan's M2 | ✅ Done | `crates/llm-core/src/templates.rs` |
+| **Fragment loader abstraction** | This plan's M2 | ✅ Done | `crates/llm-core/src/fragments.rs` |
+| **Dynamic `ProviderRegistry` in llm-core** | This plan's M1 | ✅ Done | `crates/llm-core/src/registry.rs` |
+| **Dynamic `CommandRegistry` in llm-cli** | This plan's M1 | ✅ Done | `crates/llm-cli/src/command_registry.rs` |
+| **Dynamic `EmbeddingRegistry` in llm-embeddings** | This plan's M1 | ✅ Done | `crates/llm-embeddings/src/registry.rs` |
 
 ### Prerequisite tasks (must be completed before M1)
 
@@ -58,11 +58,11 @@ impl ProviderRegistry {
 }
 ```
 
-- [ ] Create `crates/llm-core/src/registry.rs` with `ProviderRegistry`.
-- [ ] Refactor `build_provider()` to delegate to `ProviderRegistry::resolve()`.
-- [ ] Register OpenAI and Anthropic as builtin providers at startup.
-- [ ] Preserve existing model resolution order (aliases → builtin → plugin → error).
-- [ ] Add tests for registry resolution, collision, and fallback.
+- [x] Create `crates/llm-core/src/registry.rs` with `ProviderRegistry`.
+- [x] Refactor `build_provider()` to delegate to `ProviderRegistry` resolution.
+- [x] Register OpenAI and Anthropic as builtin providers at startup.
+- [x] Preserve existing model resolution order (aliases → builtin → plugin → error).
+- [x] Add tests for registry resolution, collision, fallback, and registration metadata.
 
 #### P2 — Dynamic `CommandRegistry` in llm-cli
 
@@ -78,10 +78,10 @@ pub struct CommandRegistry {
 }
 ```
 
-- [ ] Create `crates/llm-cli/src/command_registry.rs`.
-- [ ] Add a post-parse dispatch path that checks plugin commands when Clap doesn't match.
-- [ ] Implement collision rules from ADR-001 (core wins, warning on collision).
-- [ ] Add tests for command dispatch, collision warnings, and help text forwarding.
+- [x] Create `crates/llm-cli/src/command_registry.rs`.
+- [x] Add a post-parse dispatch path that checks plugin commands when Clap doesn't match.
+- [x] Implement collision rules from ADR-001 (core wins, warning on collision).
+- [x] Add tests for command dispatch, collision warnings, and plugin help rendering.
 
 #### P3 — Dynamic `EmbeddingRegistry` in llm-embeddings
 
@@ -89,9 +89,9 @@ pub struct CommandRegistry {
 
 **Required:**
 
-- [ ] Create `EmbeddingRegistry` struct with `register_builtin()` and `register_plugin()`.
-- [ ] Refactor `list_embedding_models()` and `resolve_embedding_model()` to use registry.
-- [ ] Add tests.
+- [x] Create `EmbeddingRegistry` struct with `register_builtin()` and `register_plugin()`.
+- [x] Refactor `list_embedding_models()` and `resolve_embedding_model()` to use registry.
+- [x] Add tests.
 
 #### P4 — Template loader execution trait
 
@@ -107,10 +107,10 @@ pub trait TemplateLoaderImpl: Send + Sync {
 }
 ```
 
-- [ ] Define `TemplateLoaderImpl` trait with `prefix()`, `load()`, `description()`.
-- [ ] Implement `FilesystemTemplateLoader` as the built-in.
-- [ ] Update `load_template()` to route prefix-based lookups through registered loaders.
-- [ ] Add tests.
+- [x] Define `TemplateLoaderImpl` trait with `prefix()`, `load()`, `description()`.
+- [x] Implement `FilesystemTemplateLoader` as the built-in.
+- [x] Update `load_template()` to route prefix-based lookups through registered loaders.
+- [x] Add tests.
 
 #### P5 — Fragment loader abstraction
 
@@ -126,40 +126,51 @@ pub trait FragmentLoaderImpl: Send + Sync {
 }
 ```
 
-- [ ] Define `FragmentLoaderImpl` trait.
-- [ ] Define `Fragment` data struct (source, content, hash, metadata).
-- [ ] Add fragment loader registry.
-- [ ] Add tests.
+- [x] Define `FragmentLoaderImpl` trait.
+- [x] Define `Fragment` data struct (source, content, hash, metadata).
+- [x] Add fragment loader registry.
+- [x] Add tests.
 
 **Estimated time for all prerequisites: 2–3 weeks.**
 
-## Baseline (as of this plan)
+## Baseline (historical at plan creation)
 
-- `crates/llm-plugin-host/src/lib.rs` is currently a stub (`load_plugins()` returns `llm-default-plugin-stub`).
-- `llm-cli plugins` currently lists that stub only.
-- ADR-001 defines dynamic command/model registry direction for bridge integration — **registries not yet implemented**.
-- `PromptProvider` trait is synchronous blocking only — no async runtime in the workspace.
-- `crates/llm-core/src/providers/mod.rs` has full tool/function/schema types but execution path is sync.
-- `crates/llm-embeddings/` has `EmbeddingProvider` trait and OpenAI implementation but no registry.
-- Template loaders: metadata-only, no execution trait. Fragment loaders: do not exist.
-- Workspace has 4 crates: `llm-core`, `llm-cli`, `llm-plugin-host`, `llm-embeddings`.
+- `crates/llm-plugin-host/src/lib.rs` started as a stub (`load_plugins()` returned `llm-default-plugin-stub`).
+- `llm-cli plugins` initially listed only that stub.
+- ADR-001 registry direction existed but registries had not yet been implemented.
+- `PromptProvider` remained synchronous blocking (still true for V1).
+
+## Progress Snapshot (2026-02-25)
+
+- Dynamic registries are implemented:
+  - `ProviderRegistry` (`crates/llm-core/src/registry.rs`)
+  - `CommandRegistry` (`crates/llm-cli/src/command_registry.rs`)
+  - `EmbeddingRegistry` (`crates/llm-embeddings/src/registry.rs`)
+- Loader abstractions are implemented:
+  - `TemplateLoaderImpl` + `TemplateLoaderRegistry`
+  - `FragmentLoaderImpl` + `FragmentLoaderRegistry`
+- Native plugin API crate exists: `crates/llm-plugin-api`.
+- Plugin host is feature-gated and lifecycle-aware: `crates/llm-plugin-host`.
+- First canary plugin is hand-converted: `crates/llm-plugin-markov` (+ golden test).
+- `llm-cli plugins --json` reports real plugin metadata.
+- `llm models list` includes plugin-registered models; prompt execution resolves plugin models.
 
 ## Success Criteria
 
-- [ ] Unified registries (`ProviderRegistry`, `CommandRegistry`, `EmbeddingRegistry`) operational in existing crates.
-- [ ] Native plugin API supports all upstream hook surfaces:
+- [x] Unified registries (`ProviderRegistry`, `CommandRegistry`, `EmbeddingRegistry`) operational in existing crates.
+- [x] Native plugin API supports all upstream hook surfaces:
   - `register_commands`
   - `register_models`
   - `register_embedding_models`
   - `register_template_loaders`
   - `register_fragment_loaders`
   - `register_tools`
-- [ ] Converted Rust plugins can be discovered and executed without Python.
+- [x] Converted Rust plugins can be discovered and executed without Python (validated with `llm-markov`).
 - [ ] Hand-converted canary plugins pass golden-output tests:
-  - `llm-markov` (smoke)
-  - `llm-gemini`
-  - `llm-cmd`
-  - `llm-openrouter`
+  - [x] `llm-markov` (smoke)
+  - [ ] `llm-gemini`
+  - [ ] `llm-cmd`
+  - [ ] `llm-openrouter`
 - [ ] Converter (Phase 2) produces a deterministic conversion report with zero silent drops.
 - [ ] Parity harness compares Python plugin behavior to Rust plugin behavior and publishes gaps.
 
@@ -179,11 +190,11 @@ pub trait FragmentLoaderImpl: Send + Sync {
 
 **Phase 1 (this plan, V1):**
 
-- [ ] `crates/llm-plugin-api`
+- [x] `crates/llm-plugin-api`
   - Stable trait/data contract for native plugins.
   - `PluginEntrypoint` trait, registrar traits, plugin metadata types.
   - Request/response/tool/loader/embedding types re-exported from `llm-core`.
-- [ ] `crates/llm-plugin-host` (enhanced — already exists)
+- [x] `crates/llm-plugin-host` (enhanced — already exists)
   - Discovery, manifest loading, version checks.
   - Plugin lifecycle (load → register → ready).
   - Integration with unified registries in `llm-core`/`llm-cli`/`llm-embeddings`.
@@ -202,7 +213,7 @@ pub trait FragmentLoaderImpl: Send + Sync {
   - Golden fixtures + side-by-side runner (Python plugin vs Rust plugin).
   - Deferred because golden-output tests can live in plugin crate `tests/` initially.
 
-**Rationale:** The project currently has 4 crates. Adding 2 crates in Phase 1 keeps the workspace manageable. The remaining 3 crates are deferred until the API is proven by real canary plugins.
+**Rationale:** The workspace has grown from 4 to 6 crates after Phase 1 additions. The remaining 3 plugin-related crates are deferred until the API is proven by real canary plugins.
 
 ### 2) Plugin loading mechanism
 
@@ -248,7 +259,7 @@ This is explicitly **out of scope** for V1 but the trait design should not precl
 
 ### 3) Native hook contract (Rust)
 
-- [ ] Define registrars mirroring upstream semantics:
+- [x] Define registrars mirroring upstream semantics:
 
 ```rust
 // crates/llm-plugin-api/src/lib.rs
@@ -303,9 +314,9 @@ pub enum PluginCapability {
 }
 ```
 
-- [ ] Preserve ADR-001 collision policy (core commands win; deterministic warnings).
-- [ ] Registrar traits are defined in `llm-plugin-api` and implemented by the unified registries.
-- [ ] The `PluginEntrypoint` trait uses default method implementations so plugins only override the hooks they need.
+- [x] Preserve ADR-001 collision policy (core commands win; deterministic warnings).
+- [x] Registrar traits are defined in `llm-plugin-api` and implemented by the unified registries.
+- [x] The `PluginEntrypoint` trait uses default method implementations so plugins only override the hooks they need.
 
 ### 4) Plugin manifest format (`llm-plugin.toml`)
 
@@ -335,16 +346,16 @@ entry_type = "llm_plugin_markov::MarkovPlugin"
 # dylib = "libllm_plugin_markov.so"
 ```
 
-- [ ] Define and document the manifest schema.
+- [x] Define and document the manifest schema.
 - [ ] `llm-plugin-host` reads manifests for metadata/version checks.
-- [ ] Manifests are optional in V1 (metadata can come from `PluginMetadata` trait method).
-- [ ] Required for V2 dynamic loading.
+- [x] Manifests are optional in V1 (metadata can come from `PluginMetadata` trait method).
+- [x] Required for V2 dynamic loading.
 
 ### 5) Data model parity layer
 
 - [ ] Model execution parity: streaming, **sync-only for V1**, tool calls/results, schema mode, attachments, usage, resolved model.
-- [ ] Command parity: option parsing, help text fidelity, output channels (stdout/stderr), exit codes.
-- [ ] Loader parity: template/fragment prefix registration and error semantics.
+- [x] Command parity: option parsing, help text fidelity, output channels (stdout/stderr), exit codes.
+- [x] Loader parity: template/fragment prefix registration and error semantics.
 - [ ] Tool parity: schema generation, invocation lifecycle, side effects, logging metadata.
 - [ ] Embedding parity: batching semantics, dimension checks, model defaults.
 
@@ -352,9 +363,9 @@ entry_type = "llm_plugin_markov::MarkovPlugin"
 
 ### 6) Plugin packaging and discovery
 
-- [ ] V1: Compile-time feature flags (no runtime discovery needed).
+- [x] V1: Compile-time feature flags (no runtime discovery needed).
 - [ ] V2 (future): Define discovery roots (`~/.config/io.datasette.llm/plugins/` + bundled plugins).
-- [ ] Add compatibility/version gate checks (manifest `min_host_version` vs `core_version()`).
+- [x] Add compatibility/version gate checks (manifest `min_host_version` vs `core_version()`).
 - [ ] Add plugin cache invalidation on install/uninstall/refresh (V2 only).
 
 ## Converter Design (`llm-plugin-convert`) — Phase 2
@@ -471,61 +482,61 @@ Required canary plugins (used as design anchors):
 
 ### M0 — Spec lock + architecture decisions (1–2 weeks)
 
-- [ ] **Write ADR-003: Unified plugin registry architecture.**
+- [x] **Write ADR-003: Unified plugin registry architecture.**
   - Amends ADR-001 to define a single registry serving both native and bridge plugins.
   - Specifies V1 loading mechanism (compile-time feature flags).
   - Specifies V2 loading mechanism (dynamic shared libraries — design only, not implemented).
   - Defines ABI boundary considerations for future dylib support.
-- [ ] Write ADR-004: Converter IR schema and unsupported-pattern policy (Phase 2 reference).
-- [ ] Freeze hook/trait surface in `llm-plugin-api` v0 (the `PluginEntrypoint` trait above).
-- [ ] Freeze `llm-plugin.toml` manifest schema.
-- [ ] Define parity acceptance rubric for converted plugins (golden-output match criteria).
+- [x] Write ADR-004: Converter IR schema and unsupported-pattern policy (Phase 2 reference).
+- [x] Freeze hook/trait surface in `llm-plugin-api` v0 (the `PluginEntrypoint` trait above).
+- [x] Freeze `llm-plugin.toml` manifest schema.
+- [x] Define parity acceptance rubric for converted plugins (golden-output match criteria).
 
 ### M1 — Prerequisite: Dynamic registries (2–3 weeks)
 
 > **This milestone builds the unified registries that ADR-001 designed but were never implemented.
 > Both this plan and the future pyo3 bridge depend on this work.**
 
-- [ ] **P1:** Implement `ProviderRegistry` in `llm-core` (see prerequisite P1 above).
-- [ ] **P2:** Implement `CommandRegistry` in `llm-cli` (see prerequisite P2 above).
-- [ ] **P3:** Implement `EmbeddingRegistry` in `llm-embeddings` (see prerequisite P3 above).
-- [ ] **P4:** Implement `TemplateLoaderImpl` trait in `llm-core` (see prerequisite P4 above).
-- [ ] **P5:** Implement `FragmentLoaderImpl` trait and `Fragment` data model in `llm-core` (see prerequisite P5 above).
-- [ ] Verify all existing tests still pass after registry refactor.
-- [ ] Add registry-specific tests (resolve, collision, fallback, empty).
+- [x] **P1:** Implement `ProviderRegistry` in `llm-core` (see prerequisite P1 above).
+- [x] **P2:** Implement `CommandRegistry` in `llm-cli` (see prerequisite P2 above).
+- [x] **P3:** Implement `EmbeddingRegistry` in `llm-embeddings` (see prerequisite P3 above).
+- [x] **P4:** Implement `TemplateLoaderImpl` trait in `llm-core` (see prerequisite P4 above).
+- [x] **P5:** Implement `FragmentLoaderImpl` trait and `Fragment` data model in `llm-core` (see prerequisite P5 above).
+- [x] Verify all existing tests still pass after registry refactor.
+- [x] Add registry-specific tests (resolve, collision, fallback, empty).
 
 ### M2 — Plugin API crate + enhanced plugin host (2 weeks)
 
-- [ ] Create `crates/llm-plugin-api`:
+- [x] Create `crates/llm-plugin-api`:
   - `PluginEntrypoint` trait with default-method hooks.
   - `PluginMetadata` and `PluginCapability` types.
   - Registrar trait definitions (`CommandRegistrar`, `ModelRegistrar`, `EmbeddingRegistrar`, `TemplateLoaderRegistrar`, `FragmentLoaderRegistrar`, `ToolRegistrar`).
   - Re-export necessary types from `llm-core` (`PromptProvider`, `EmbeddingProvider`, `ToolDefinition`, etc.).
-- [ ] Enhance `crates/llm-plugin-host`:
+- [x] Enhance `crates/llm-plugin-host`:
   - Replace stub `load_plugins()` with feature-gated plugin loading.
   - Add plugin lifecycle: load → metadata check → version gate → register hooks.
   - Wire registrars into unified registries from M1.
   - Implement collision diagnostics (ADR-001 rules: core wins, warning on collision).
   - Add `llm-plugin.toml` manifest parsing (optional — metadata can come from trait).
-- [ ] Update `Cargo.toml` workspace: add `llm-plugin-api` member, update `llm-plugin-host` dependencies.
-- [ ] Update `llm-cli plugins list` to show real plugin metadata.
+- [x] Update `Cargo.toml` workspace: add `llm-plugin-api` member, update `llm-plugin-host` dependencies.
+- [x] Update `llm-cli plugins list` to show real plugin metadata.
 
 ### M3 — Hook parity + execution semantics (2–3 weeks)
 
-- [ ] **Commands:** Plugin commands dispatch through `CommandRegistry`. Plugin provides argument spec + handler function. Help text forwarded correctly.
+- [x] **Commands:** Plugin commands dispatch through `CommandRegistry`. Plugin provides argument spec + handler function. Help text forwarded correctly.
 - [ ] **Models (sync only):** Plugin models implement `PromptProvider`. Streaming via `StreamSink`. Tool calls/results, schema mode, attachments, usage metadata.
 - [ ] **Embeddings:** Plugin embedding models implement `EmbeddingProvider`. Batch semantics, dimension declaration.
-- [ ] **Template loaders:** Plugin loaders implement `TemplateLoaderImpl`. Prefix-based routing.
-- [ ] **Fragment loaders:** Plugin loaders implement `FragmentLoaderImpl`. Multi-fragment returns, hash computation.
+- [x] **Template loaders:** Plugin loaders implement `TemplateLoaderImpl`. Prefix-based routing.
+- [x] **Fragment loaders:** Plugin loaders implement `FragmentLoaderImpl`. Multi-fragment returns, hash computation.
 - [ ] **Tools:** Plugin tools implement schema generation + invocation handler. Tool results logged to DB.
-- [ ] Contract tests for each hook family (one test per registrar that exercises the full lifecycle).
+- [x] Contract tests for each hook family (one test per registrar that exercises the full lifecycle).
 
 ### M4 — Canary hand-conversions (3–4 weeks)
 
 > Hand-convert each canary plugin as a separate crate. No automated converter — the goal is to
 > validate the API and build the template patterns that the converter will later automate.
 
-- [ ] **`llm-markov`** (smoke — 1–2 days)
+- [x] **`llm-markov`** (smoke — 1–2 days)
   - Create `crates/llm-plugin-markov/`.
   - Implement `PluginEntrypoint` with `register_models` only.
   - Markov chain model implementing `PromptProvider` (sync, no streaming).
@@ -628,7 +639,7 @@ The side-by-side parity harness requires a Python environment:
 
 ## Internal code references
 
-- `crates/llm-plugin-host/src/lib.rs` — current stub, target for enhancement
+- `crates/llm-plugin-host/src/lib.rs` — feature-gated plugin host with lifecycle registrars
 - `crates/llm-plugin-host/Cargo.toml` — current dependencies
 - `crates/llm-cli/src/main.rs` — Clap command dispatch, `list_plugins()` at line 1690
 - `crates/llm-core/src/lib.rs` — `build_provider()` at line 581, `BUILTIN_MODELS` static dispatch

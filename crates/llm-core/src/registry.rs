@@ -30,6 +30,17 @@ pub trait ProviderFactory: Send + Sync {
     }
 }
 
+/// Metadata for a registered provider entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRegistration {
+    /// Key used for resolution (`prefix` for builtins, model ID/prefix for plugins).
+    pub key: String,
+    /// Provider identifier returned by the underlying factory.
+    pub provider_id: String,
+    /// Human-readable description from the factory.
+    pub description: String,
+}
+
 /// Registry holding builtin and plugin providers with clear resolution order.
 ///
 /// Resolution order (per ADR-001):
@@ -175,6 +186,36 @@ impl ProviderRegistry {
         models
     }
 
+    /// List metadata for builtin provider registrations.
+    pub fn list_builtin_registrations(&self) -> Vec<ProviderRegistration> {
+        let builtin = self.builtin.read().unwrap();
+        let mut entries: Vec<ProviderRegistration> = builtin
+            .iter()
+            .map(|(key, factory)| ProviderRegistration {
+                key: key.clone(),
+                provider_id: factory.id().to_string(),
+                description: factory.description().to_string(),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.key.cmp(&b.key));
+        entries
+    }
+
+    /// List metadata for plugin provider registrations.
+    pub fn list_plugin_registrations(&self) -> Vec<ProviderRegistration> {
+        let plugin = self.plugin.read().unwrap();
+        let mut entries: Vec<ProviderRegistration> = plugin
+            .iter()
+            .map(|(key, factory)| ProviderRegistration {
+                key: key.clone(),
+                provider_id: factory.id().to_string(),
+                description: factory.description().to_string(),
+            })
+            .collect();
+        entries.sort_by(|a, b| a.key.cmp(&b.key));
+        entries
+    }
+
     /// Check if a builtin provider is registered for the given prefix.
     pub fn has_builtin(&self, prefix: &str) -> bool {
         let builtin = self.builtin.read().unwrap();
@@ -304,7 +345,10 @@ mod tests {
     #[test]
     fn test_resolve_builtin() {
         let registry = ProviderRegistry::new();
-        registry.register_builtin("openai", Box::new(TestFactory::new("openai", "openai response")));
+        registry.register_builtin(
+            "openai",
+            Box::new(TestFactory::new("openai", "openai response")),
+        );
 
         let config = PromptConfig::default();
         let request = PromptRequest::user_only("openai/gpt-4".to_string(), "hello".to_string());
@@ -325,7 +369,8 @@ mod tests {
         );
 
         let config = PromptConfig::default();
-        let request = PromptRequest::user_only("custom/special-model".to_string(), "hello".to_string());
+        let request =
+            PromptRequest::user_only("custom/special-model".to_string(), "hello".to_string());
 
         let provider = registry.create_provider("custom/special-model", &request, &config);
         assert!(provider.is_ok());
@@ -338,7 +383,10 @@ mod tests {
     fn test_builtin_takes_precedence() {
         let registry = ProviderRegistry::new();
         registry.register_builtin("openai", Box::new(TestFactory::new("openai", "builtin")));
-        registry.register_plugin("openai/gpt-4", Box::new(TestFactory::new("plugin-openai", "plugin")));
+        registry.register_plugin(
+            "openai/gpt-4",
+            Box::new(TestFactory::new("plugin-openai", "plugin")),
+        );
 
         // Should have a collision warning
         let warnings = registry.collision_warnings();
@@ -349,15 +397,23 @@ mod tests {
         let request = PromptRequest::user_only("openai/gpt-4".to_string(), "hello".to_string());
 
         // Builtin should be used, not plugin
-        let provider = registry.create_provider("openai/gpt-4", &request, &config).unwrap();
+        let provider = registry
+            .create_provider("openai/gpt-4", &request, &config)
+            .unwrap();
         assert_eq!(provider.id(), "openai");
     }
 
     #[test]
     fn test_plugin_collision_warning() {
         let registry = ProviderRegistry::new();
-        registry.register_plugin("custom/model", Box::new(TestFactory::new("custom1", "first")));
-        registry.register_plugin("custom/model", Box::new(TestFactory::new("custom2", "second")));
+        registry.register_plugin(
+            "custom/model",
+            Box::new(TestFactory::new("custom1", "first")),
+        );
+        registry.register_plugin(
+            "custom/model",
+            Box::new(TestFactory::new("custom2", "second")),
+        );
 
         let warnings = registry.collision_warnings();
         assert!(!warnings.is_empty());
@@ -366,7 +422,9 @@ mod tests {
         // Second registration should win
         let config = PromptConfig::default();
         let request = PromptRequest::user_only("custom/model".to_string(), "hello".to_string());
-        let provider = registry.create_provider("custom/model", &request, &config).unwrap();
+        let provider = registry
+            .create_provider("custom/model", &request, &config)
+            .unwrap();
         assert_eq!(provider.id(), "custom2");
     }
 
@@ -390,7 +448,10 @@ mod tests {
     fn test_fallback_to_plugin_prefix() {
         let registry = ProviderRegistry::new();
         // Register plugin with prefix only
-        registry.register_plugin("custom", Box::new(TestFactory::new("custom", "prefix fallback")));
+        registry.register_plugin(
+            "custom",
+            Box::new(TestFactory::new("custom", "prefix fallback")),
+        );
 
         let config = PromptConfig::default();
         let request = PromptRequest::user_only("custom/any-model".to_string(), "hello".to_string());
@@ -413,6 +474,27 @@ mod tests {
     }
 
     #[test]
+    fn test_list_registrations_include_metadata() {
+        let registry = ProviderRegistry::new();
+        registry.register_builtin("openai", Box::new(TestFactory::new("openai", "builtin")));
+        registry.register_plugin(
+            "markov",
+            Box::new(TestFactory::new("markov", "deterministic markov")),
+        );
+
+        let builtin = registry.list_builtin_registrations();
+        assert_eq!(builtin.len(), 1);
+        assert_eq!(builtin[0].key, "openai");
+        assert_eq!(builtin[0].provider_id, "openai");
+
+        let plugin = registry.list_plugin_registrations();
+        assert_eq!(plugin.len(), 1);
+        assert_eq!(plugin[0].key, "markov");
+        assert_eq!(plugin[0].provider_id, "markov");
+        assert_eq!(plugin[0].description, "markov");
+    }
+
+    #[test]
     fn test_provider_execution() {
         let registry = ProviderRegistry::new();
         registry.register_builtin("test", Box::new(TestFactory::new("test", "hello world")));
@@ -420,7 +502,9 @@ mod tests {
         let config = PromptConfig::default();
         let request = PromptRequest::user_only("test/model".to_string(), "prompt".to_string());
 
-        let provider = registry.create_provider("test/model", &request, &config).unwrap();
+        let provider = registry
+            .create_provider("test/model", &request, &config)
+            .unwrap();
         let completion = provider.complete(request).unwrap();
 
         assert_eq!(completion.text, "hello world");

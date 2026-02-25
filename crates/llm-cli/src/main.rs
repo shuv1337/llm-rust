@@ -24,7 +24,7 @@ use llm_embeddings::{
     delete_collection, list_collections, list_embedding_models, resolve_embedding_model,
     Collection, EmbedItem, EmbeddingProvider, Entry, OpenAIEmbeddingProvider,
 };
-use llm_plugin_host::load_plugins;
+use llm_plugin_host::{load_plugin_commands, load_plugins};
 use rpassword::prompt_password;
 use rustyline::{error::ReadlineError, DefaultEditor};
 use shell_words::split as shell_split;
@@ -904,8 +904,8 @@ fn main() -> Result<()> {
     let raw_args: Vec<String> = env::args().collect();
     let args = migrate_legacy_continuation_args(raw_args.clone());
 
-    // Initialize the command registry with core commands
-    let registry = create_registry();
+    // Initialize command registry with core + plugin commands.
+    let registry = create_runtime_command_registry()?;
 
     // Try to parse with Clap first
     match Cli::try_parse_from(&args) {
@@ -919,7 +919,9 @@ fn main() -> Result<()> {
                 // Extract the subcommand name from args
                 if let Some(cmd_name) = extract_subcommand_name(&args) {
                     // Try plugin command dispatch
-                    if let Some(result) = registry.dispatch(&cmd_name, &extract_command_args(&args, &cmd_name)) {
+                    if let Some(result) =
+                        registry.dispatch(&cmd_name, &extract_command_args(&args, &cmd_name))
+                    {
                         return result;
                     }
                 }
@@ -975,6 +977,19 @@ fn extract_command_args(args: &[String], cmd_name: &str) -> Vec<String> {
     }
 
     result
+}
+
+fn create_runtime_command_registry() -> Result<CommandRegistry> {
+    let mut registry = create_registry();
+    for command in load_plugin_commands().context("failed to load plugin commands")? {
+        let _ = registry.register_plugin(PluginCommand::new(
+            command.name,
+            command.description,
+            command.plugin_name,
+            command.handler,
+        ));
+    }
+    Ok(registry)
 }
 
 /// Run the CLI after successful Clap parsing.
@@ -1037,7 +1052,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         None => {
             if prompt_input.prompt.is_empty() && io::stdin().is_terminal() {
                 // Show help with plugin commands appended
-                let registry = create_registry();
+                let registry = create_runtime_command_registry()?;
                 Cli::command().print_help()?;
                 let plugin_help = registry.plugin_commands_help();
                 if !plugin_help.is_empty() {
@@ -1778,16 +1793,49 @@ fn init_tracing(logging: &LoggingOptions) {
 fn list_plugins(json: bool) -> Result<()> {
     let plugins = load_plugins().context("failed to load plugins")?;
     if json {
-        let names: Vec<_> = plugins.iter().map(|p| &p.name).collect();
-        let json = serde_json::to_string_pretty(&names)?;
+        let json = serde_json::to_string_pretty(&plugins)?;
         println!("{json}");
-    } else if plugins.is_empty() {
+        return Ok(());
+    }
+
+    if plugins.is_empty() {
         println!("No plugins loaded.");
-    } else {
-        for plugin in plugins {
-            println!("{}", plugin.name);
+        return Ok(());
+    }
+
+    for plugin in plugins {
+        let capabilities: Vec<&str> = plugin
+            .capabilities
+            .iter()
+            .map(|cap| match cap {
+                llm_plugin_api::PluginCapability::Models => "models",
+                llm_plugin_api::PluginCapability::EmbeddingModels => "embedding-models",
+                llm_plugin_api::PluginCapability::Commands => "commands",
+                llm_plugin_api::PluginCapability::TemplateLoaders => "template-loaders",
+                llm_plugin_api::PluginCapability::FragmentLoaders => "fragment-loaders",
+                llm_plugin_api::PluginCapability::Tools => "tools",
+            })
+            .collect();
+
+        let desc = plugin
+            .description
+            .as_deref()
+            .map(|d| format!(" - {}", d))
+            .unwrap_or_default();
+
+        if capabilities.is_empty() {
+            println!("{} @ {}{}", plugin.id, plugin.version, desc);
+        } else {
+            println!(
+                "{} @ {} [{}]{}",
+                plugin.id,
+                plugin.version,
+                capabilities.join(", "),
+                desc
+            );
         }
     }
+
     Ok(())
 }
 

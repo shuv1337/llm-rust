@@ -49,6 +49,7 @@
 pub mod collection;
 pub mod migrations;
 pub mod provider;
+pub mod registry;
 
 // Re-export main types for convenience
 pub use collection::{
@@ -59,11 +60,13 @@ pub use migrations::{
     all_migrations as all_embeddings_migrations, list_applied_migrations, list_pending_migrations,
     run_embeddings_migrations, AppliedMigration, Migration,
 };
+#[allow(deprecated)]
 pub use provider::{
     list_embedding_models, resolve_embedding_model, EmbeddingConfig, EmbeddingModelInfo,
     EmbeddingProvider, EmbeddingResult, OpenAIEmbeddingConfig, OpenAIEmbeddingProvider,
     BUILTIN_OPENAI_MODELS,
 };
+pub use registry::{global_registry, EmbeddingRegistry};
 
 /// Returns the number of embeddings currently stored (always zero for now).
 ///

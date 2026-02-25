@@ -11,7 +11,7 @@ use providers::StreamSink as ProviderStreamSink;
 use providers::{PromptProvider, PromptRequest, VecStreamSink};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 mod aliases;
 mod attachments;
+mod fragments;
 mod logs;
 pub mod migrations;
 mod model_options;
@@ -33,6 +34,10 @@ pub use aliases::{
 pub use attachments::{
     detect_mime_from_content, detect_mime_from_path, detect_remote_mime, Attachment,
 };
+pub use fragments::{
+    fragment_hash, fragment_loader_registry, list_fragment_loaders, load_fragments, Fragment,
+    FragmentLoader, FragmentLoaderImpl, FragmentLoaderRegistry,
+};
 pub use logs::{
     backup_logs, get_latest_conversation_id, get_schema, get_tool, list_logs, list_schemas,
     list_tools, load_conversation_messages, logs_enabled, logs_status, set_logging_enabled,
@@ -44,11 +49,12 @@ pub use model_options::{
     ModelOptions, StoredModelOptions,
 };
 pub use providers::{MessageRole, PromptMessage, StreamSink, UsageInfo};
+pub use registry::{ProviderFactory, ProviderRegistration, ProviderRegistry};
 pub use templates::{
     delete_template, get_template, list_template_loaders, list_templates, load_template,
-    save_template, templates_path, Template, TemplateLoader,
+    save_template, template_loader_registry, templates_path, FilesystemTemplateLoader, Template,
+    TemplateLoader, TemplateLoaderImpl, TemplateLoaderRegistry,
 };
-pub use registry::{ProviderFactory, ProviderRegistry};
 
 struct BuiltinModel {
     canonical: &'static str,
@@ -569,9 +575,7 @@ fn apply_prompt_overrides(request: &mut PromptRequest, config: &PromptConfig<'_>
     }
 }
 
-
 // ==================== Provider Factories ====================
-
 
 /// Global provider registry (lazy-initialized with builtin providers).
 static PROVIDER_REGISTRY: OnceLock<ProviderRegistry> = OnceLock::new();
@@ -588,7 +592,10 @@ pub fn provider_registry() -> &'static ProviderRegistry {
 /// Register all builtin providers with the given registry.
 fn register_builtin_providers(registry: &ProviderRegistry) {
     registry.register_builtin("openai", Box::new(OpenAIProviderFactory));
-    registry.register_builtin("openai-compatible", Box::new(OpenAICompatibleProviderFactory));
+    registry.register_builtin(
+        "openai-compatible",
+        Box::new(OpenAICompatibleProviderFactory),
+    );
     registry.register_builtin("anthropic", Box::new(AnthropicProviderFactory));
 }
 
@@ -605,8 +612,8 @@ impl registry::ProviderFactory for OpenAIProviderFactory {
         let retries = resolve_retries(provider_id, config);
         let retry_backoff_ms = resolve_retry_backoff_ms(provider_id, config);
         let key = resolve_api_key(provider_id, config)?;
-        let base_url = env::var("OPENAI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+        let base_url =
+            env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
         Ok(Box::new(OpenAIProvider::new(OpenAIConfig {
             base_url,
             api_key: key,
@@ -691,52 +698,12 @@ impl registry::ProviderFactory for AnthropicProviderFactory {
 
 #[allow(dead_code)]
 fn build_provider(
-    provider_id: &str,
+    _provider_id: &str,
     request: &PromptRequest,
     config: &PromptConfig<'_>,
 ) -> Result<Box<dyn PromptProvider>> {
-    let retries = resolve_retries(provider_id, config);
-    let retry_backoff_ms = resolve_retry_backoff_ms(provider_id, config);
-    match provider_id {
-        "openai" => {
-            let key = resolve_api_key(provider_id, config)?;
-            let base_url = env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-            Ok(Box::new(OpenAIProvider::new(OpenAIConfig {
-                base_url,
-                api_key: key,
-                retries,
-                retry_backoff: Duration::from_millis(retry_backoff_ms),
-            })?))
-        }
-        "openai-compatible" => {
-            let key = resolve_api_key(provider_id, config)?;
-            let base_url = resolve_openai_compatible_base_url();
-            Ok(Box::new(OpenAIProvider::new(OpenAIConfig {
-                base_url,
-                api_key: key,
-                retries,
-                retry_backoff: Duration::from_millis(retry_backoff_ms),
-            })?))
-        }
-        "anthropic" => {
-            let key = resolve_api_key(provider_id, config)?;
-            let base_url = resolve_anthropic_base_url();
-            let default_max_tokens = resolve_anthropic_default_max_tokens();
-            Ok(Box::new(AnthropicProvider::new(AnthropicConfig {
-                base_url,
-                api_key: key,
-                retries,
-                retry_backoff: Duration::from_millis(retry_backoff_ms),
-                default_max_tokens,
-                timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
-            })?))
-        }
-        other => bail!(
-            "Unsupported provider '{other}' for model '{}'",
-            request.model
-        ),
-    }
+    // Resolution is centralized in `ProviderRegistry`.
+    provider_registry().create_provider(&request.model, request, config)
 }
 
 fn execute_request(
@@ -1006,7 +973,7 @@ fn resolve_anthropic_default_max_tokens() -> Option<u32> {
         .or_else(|| env_u32("ANTHROPIC_MAX_TOKENS"))
 }
 
-/// Return the list of built-in models annotated with the current default.
+/// Return the list of built-in and plugin-registered models annotated with the current default.
 pub fn available_models() -> Result<Vec<ModelInfo>> {
     let default = get_default_model()?;
     let default = default.or_else(|| {
@@ -1035,6 +1002,44 @@ pub fn available_models() -> Result<Vec<ModelInfo>> {
             has_options: stored_options.contains_key(model.canonical),
         })
         .collect();
+
+    // Include plugin-registered models from the dynamic provider registry.
+    // Builtins win on name collisions.
+    let mut seen_names: HashSet<String> = models
+        .iter()
+        .map(|model| model.name.to_ascii_lowercase())
+        .collect();
+
+    for registration in provider_registry().list_plugin_registrations() {
+        if !seen_names.insert(registration.key.to_ascii_lowercase()) {
+            continue;
+        }
+
+        let provider = registration
+            .key
+            .split_once('/')
+            .map(|(prefix, _)| prefix.to_string())
+            .unwrap_or_else(|| registration.provider_id.clone());
+
+        let description = if registration.description.trim().is_empty() {
+            format!("Plugin model for provider '{provider}'")
+        } else {
+            registration.description.clone()
+        };
+
+        models.push(ModelInfo {
+            name: registration.key.clone(),
+            provider: provider.clone(),
+            description,
+            is_default: default.as_deref() == Some(registration.key.as_str()),
+            aliases: Vec::new(),
+            supports_tools: provider_supports_tools(&provider),
+            supports_schemas: provider_supports_schemas(&provider),
+            supports_async: provider_supports_async(&provider),
+            has_options: stored_options.contains_key(&registration.key),
+        });
+    }
+
     if let Some(ref default_name) = default {
         if !models.iter().any(|m| m.is_default) {
             let provider = provider_from_model(default_name).to_string();
@@ -1239,13 +1244,32 @@ fn model_is_allowed(name: &str) -> bool {
     if canonical_for(name).is_some() {
         return true;
     }
+
+    // Plugin exact model registrations are always allowed.
+    if provider_registry().has_plugin(name) {
+        return true;
+    }
+
     if let Some((provider, model)) = name.split_once('/') {
         let provider = provider.trim();
         let model = model.trim();
         if provider.is_empty() || model.is_empty() {
             return false;
         }
-        matches!(provider, "openai" | "openai-compatible" | "anthropic")
+
+        // Builtin provider prefixes.
+        if matches!(provider, "openai" | "openai-compatible" | "anthropic") {
+            return true;
+        }
+
+        // Plugin prefix registrations (for example `markov/...` when plugin
+        // registered a prefix key like `markov`).
+        if provider_registry().has_plugin(provider) {
+            return true;
+        }
+
+        // Plugin exact model registrations containing '/'.
+        provider_registry().has_plugin(name)
     } else {
         false
     }
@@ -1389,6 +1413,7 @@ pub(crate) fn test_env_lock() -> &'static std::sync::Mutex<()> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn temp_user_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp dir")
@@ -1400,6 +1425,45 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         f();
         drop(guard);
+    }
+
+    static TEST_PLUGIN_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn unique_plugin_model_id(prefix: &str) -> String {
+        let n = TEST_PLUGIN_COUNTER.fetch_add(1, Ordering::SeqCst);
+        format!("{prefix}-{n}")
+    }
+
+    struct TestPluginProvider;
+
+    impl PromptProvider for TestPluginProvider {
+        fn id(&self) -> &'static str {
+            "test-plugin"
+        }
+
+        fn complete(&self, _request: PromptRequest) -> Result<providers::PromptCompletion> {
+            Ok(providers::PromptCompletion::text("plugin"))
+        }
+    }
+
+    struct TestPluginFactory;
+
+    impl ProviderFactory for TestPluginFactory {
+        fn create(
+            &self,
+            _request: &PromptRequest,
+            _config: &PromptConfig<'_>,
+        ) -> Result<Box<dyn PromptProvider>> {
+            Ok(Box::new(TestPluginProvider))
+        }
+
+        fn id(&self) -> &str {
+            "test-plugin"
+        }
+
+        fn description(&self) -> &str {
+            "Test plugin provider"
+        }
     }
 
     #[test]
@@ -1464,6 +1528,45 @@ mod tests {
                 .find(|m| m.name == "anthropic/claude-sonnet-4-6")
                 .expect("sonnet 4.6 present");
             assert!(sonnet_46.aliases.iter().any(|a| a == "claude-sonnet-4.6"));
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
+    fn available_models_include_plugin_registrations() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            let model_id = unique_plugin_model_id("plugin-model");
+            provider_registry().register_plugin(&model_id, Box::new(TestPluginFactory));
+
+            let models = available_models().expect("models");
+            let plugin_model = models
+                .iter()
+                .find(|model| model.name == model_id)
+                .expect("plugin model listed");
+
+            assert_eq!(plugin_model.provider, "test-plugin");
+            assert_eq!(plugin_model.description, "Test plugin provider");
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
+    fn set_default_model_accepts_registered_plugin_model() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            let model_id = unique_plugin_model_id("plugin-default");
+            provider_registry().register_plugin(&model_id, Box::new(TestPluginFactory));
+
+            set_default_model(&model_id).expect("set plugin model default");
+            let stored = get_default_model().expect("stored default").unwrap();
+            assert_eq!(stored, model_id);
 
             env::remove_var("LLM_USER_PATH");
         });

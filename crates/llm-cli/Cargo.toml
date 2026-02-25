@@ -7,7 +7,8 @@ edition = "2021"
 anyhow = { workspace = true }
 clap = { workspace = true }
 llm-core = { path = "../llm-core" }
-llm-plugin-host = { path = "../llm-plugin-host" }
+llm-plugin-api = { path = "../llm-plugin-api" }
+llm-plugin-host = { path = "../llm-plugin-host", features = ["plugin-markov"] }
 llm-embeddings = { path = "../llm-embeddings" }
 serde_json = { workspace = true }
 tracing = { workspace = true }

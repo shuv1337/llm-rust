@@ -324,6 +324,8 @@ fn models_list_outputs_available_models() {
     assert!(array
         .iter()
         .any(|m| m["name"] == "anthropic/claude-opus-4-6"));
+    assert!(array.iter().any(|m| m["name"] == "markov"));
+
     let gpt4o = array
         .iter()
         .find(|m| m["name"] == "openai/gpt-4o")
@@ -379,10 +381,42 @@ fn plugins_command_outputs_json() {
     cmd.args(["plugins", "--json"]);
     let output = cmd.assert().success().get_output().stdout.clone();
     let json: Value = serde_json::from_slice(&output).expect("valid json");
+
+    let array = json.as_array().expect("plugins json array");
+    assert!(!array.is_empty(), "expected at least one compiled plugin");
+
+    let markov = array
+        .iter()
+        .find(|entry| entry.get("id") == Some(&Value::String("llm-markov".into())))
+        .expect("llm-markov plugin present");
+
+    assert_eq!(markov.get("version"), Some(&Value::String("0.1.0".into())));
     assert_eq!(
-        json,
-        Value::Array(vec![Value::String("llm-default-plugin-stub".into())])
+        markov.get("min_host_version"),
+        Some(&Value::String("1.0.0".into()))
     );
+}
+
+#[test]
+fn prompt_uses_markov_plugin_model_without_api_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cmd = Command::cargo_bin("llm-cli").expect("binary exists");
+    cmd.args([
+        "prompt",
+        "--model",
+        "markov",
+        "--no-stream",
+        "the quick brown fox jumps over the lazy dog",
+    ])
+    .env("LLM_USER_PATH", tmp.path());
+
+    let output = cmd.assert().success().get_output().stdout.clone();
+    let text = String::from_utf8_lossy(&output);
+    assert!(
+        text.starts_with("quick brown fox jumps over the lazy dog"),
+        "unexpected markov output: {text}"
+    );
+    assert!(!text.contains("llm-core stub response"));
 }
 
 #[test]

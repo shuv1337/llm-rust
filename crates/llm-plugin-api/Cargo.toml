@@ -1,0 +1,10 @@
+[package]
+name = "llm-plugin-api"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+llm-core = { path = "../llm-core" }
+llm-embeddings = { path = "../llm-embeddings" }
+serde = { workspace = true }

@@ -1,0 +1,9 @@
+[package]
+name = "llm-plugin-markov"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+llm-core = { path = "../llm-core" }
+llm-plugin-api = { path = "../llm-plugin-api" }
