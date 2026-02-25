@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 mod aliases;
@@ -23,6 +24,7 @@ mod logs;
 pub mod migrations;
 mod model_options;
 pub mod providers;
+pub mod registry;
 mod templates;
 pub use aliases::{
     aliases_path, get_alias, list_aliases, load_aliases, remove_alias, resolve_user_alias,
@@ -46,6 +48,7 @@ pub use templates::{
     delete_template, get_template, list_template_loaders, list_templates, load_template,
     save_template, templates_path, Template, TemplateLoader,
 };
+pub use registry::{ProviderFactory, ProviderRegistry};
 
 struct BuiltinModel {
     canonical: &'static str,
@@ -566,6 +569,127 @@ fn apply_prompt_overrides(request: &mut PromptRequest, config: &PromptConfig<'_>
     }
 }
 
+
+// ==================== Provider Factories ====================
+
+
+/// Global provider registry (lazy-initialized with builtin providers).
+static PROVIDER_REGISTRY: OnceLock<ProviderRegistry> = OnceLock::new();
+
+/// Get the global provider registry, initializing it with builtin providers if needed.
+pub fn provider_registry() -> &'static ProviderRegistry {
+    PROVIDER_REGISTRY.get_or_init(|| {
+        let registry = ProviderRegistry::new();
+        register_builtin_providers(&registry);
+        registry
+    })
+}
+
+/// Register all builtin providers with the given registry.
+fn register_builtin_providers(registry: &ProviderRegistry) {
+    registry.register_builtin("openai", Box::new(OpenAIProviderFactory));
+    registry.register_builtin("openai-compatible", Box::new(OpenAICompatibleProviderFactory));
+    registry.register_builtin("anthropic", Box::new(AnthropicProviderFactory));
+}
+
+/// Factory for creating OpenAI providers.
+struct OpenAIProviderFactory;
+
+impl registry::ProviderFactory for OpenAIProviderFactory {
+    fn create(
+        &self,
+        _request: &PromptRequest,
+        config: &PromptConfig<'_>,
+    ) -> Result<Box<dyn PromptProvider>> {
+        let provider_id = "openai";
+        let retries = resolve_retries(provider_id, config);
+        let retry_backoff_ms = resolve_retry_backoff_ms(provider_id, config);
+        let key = resolve_api_key(provider_id, config)?;
+        let base_url = env::var("OPENAI_BASE_URL")
+            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+        Ok(Box::new(OpenAIProvider::new(OpenAIConfig {
+            base_url,
+            api_key: key,
+            retries,
+            retry_backoff: Duration::from_millis(retry_backoff_ms),
+        })?))
+    }
+
+    fn id(&self) -> &str {
+        "openai"
+    }
+
+    fn description(&self) -> &str {
+        "OpenAI API provider"
+    }
+}
+
+/// Factory for creating OpenAI-compatible providers.
+struct OpenAICompatibleProviderFactory;
+
+impl registry::ProviderFactory for OpenAICompatibleProviderFactory {
+    fn create(
+        &self,
+        _request: &PromptRequest,
+        config: &PromptConfig<'_>,
+    ) -> Result<Box<dyn PromptProvider>> {
+        let provider_id = "openai-compatible";
+        let retries = resolve_retries(provider_id, config);
+        let retry_backoff_ms = resolve_retry_backoff_ms(provider_id, config);
+        let key = resolve_api_key(provider_id, config)?;
+        let base_url = resolve_openai_compatible_base_url();
+        Ok(Box::new(OpenAIProvider::new(OpenAIConfig {
+            base_url,
+            api_key: key,
+            retries,
+            retry_backoff: Duration::from_millis(retry_backoff_ms),
+        })?))
+    }
+
+    fn id(&self) -> &str {
+        "openai-compatible"
+    }
+
+    fn description(&self) -> &str {
+        "OpenAI-compatible API provider"
+    }
+}
+
+/// Factory for creating Anthropic providers.
+struct AnthropicProviderFactory;
+
+impl registry::ProviderFactory for AnthropicProviderFactory {
+    fn create(
+        &self,
+        _request: &PromptRequest,
+        config: &PromptConfig<'_>,
+    ) -> Result<Box<dyn PromptProvider>> {
+        let provider_id = "anthropic";
+        let retries = resolve_retries(provider_id, config);
+        let retry_backoff_ms = resolve_retry_backoff_ms(provider_id, config);
+        let key = resolve_api_key(provider_id, config)?;
+        let base_url = resolve_anthropic_base_url();
+        let default_max_tokens = resolve_anthropic_default_max_tokens();
+        Ok(Box::new(AnthropicProvider::new(AnthropicConfig {
+            base_url,
+            api_key: key,
+            retries,
+            retry_backoff: Duration::from_millis(retry_backoff_ms),
+            default_max_tokens,
+            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+        })?))
+    }
+
+    fn id(&self) -> &str {
+        "anthropic"
+    }
+
+    fn description(&self) -> &str {
+        "Anthropic Claude API provider"
+    }
+}
+
+#[allow(dead_code)]
 fn build_provider(
     provider_id: &str,
     request: &PromptRequest,
@@ -620,8 +744,8 @@ fn execute_request(
     config: &PromptConfig<'_>,
     external_sink: Option<&mut dyn ProviderStreamSink>,
 ) -> Result<String> {
-    let provider_id = provider_from_model(&request.model);
-    let provider = build_provider(provider_id, &request, config)?;
+    // Use the global provider registry for dynamic dispatch
+    let provider = provider_registry().create_provider(&request.model, &request, config)?;
     let mut external_sink = external_sink;
     let request_for_logging = request.clone();
     let mut accumulator = VecStreamSink::new();
