@@ -73,6 +73,7 @@ LLM_PROMPT_STUB=1 LLM_CMD_AUTO_ACCEPT=1 cargo run -- cmd "undo last git commit"
 
 ## Useful References
 - Detailed roadmap: `PLAN-llm-upstream-feature-parity-roadmap.md`
+- Native plugin conversion plan: `PLAN-rust-native-plugin-api-and-converter.md`
 - Rewrite backlog: `docs/rust-rewrite-plan.md`
 - CLI parity matrix: `docs/cli-parity-matrix.md`
 - Plugin docs: `docs/plugins/index.md`, `docs/plugins/plugin-hooks.md`

@@ -143,6 +143,7 @@ Feature parity is achieved when all the following criteria are met:
 ## Plugin Ecosystem & Runtime Architecture
 
 See [ADR-001](adr/ADR-001-plugin-runtime-architecture.md) for architectural details.
+For the native Rust conversion track (Python plugin repo → Rust plugin scaffolding + parity harness), see [PLAN-rust-native-plugin-api-and-converter.md](../PLAN-rust-native-plugin-api-and-converter.md).
 
 - [ ] Implement Python plugin bridge with `pyo3`, environment management, pluggy hook compatibility, and entrypoint discovery.
 - [ ] Implement dynamic CLI command registry so plugin commands can be registered/executed at runtime.
