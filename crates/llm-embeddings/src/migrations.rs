@@ -140,9 +140,8 @@ pub fn run_embeddings_migrations(conn: &Connection) -> Result<usize> {
 pub fn list_applied_migrations(conn: &Connection) -> Result<Vec<AppliedMigration>> {
     ensure_migrations_table(conn)?;
 
-    let mut stmt = conn.prepare(
-        "SELECT name, applied_at FROM _llm_embeddings_migrations ORDER BY id ASC",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT name, applied_at FROM _llm_embeddings_migrations ORDER BY id ASC")?;
 
     let rows = stmt.query_map([], |row| {
         Ok(AppliedMigration {
@@ -151,7 +150,8 @@ pub fn list_applied_migrations(conn: &Connection) -> Result<Vec<AppliedMigration
         })
     })?;
 
-    rows.collect::<Result<Vec<_>, _>>().context("failed to list migrations")
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("failed to list migrations")
 }
 
 /// List pending embeddings migrations.
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn test_list_pending_migrations() {
         let conn = in_memory_db();
-        
+
         // Before running, all are pending
         let pending = list_pending_migrations(&conn).expect("list");
         assert_eq!(pending.len(), EMBEDDINGS_MIGRATIONS.len());

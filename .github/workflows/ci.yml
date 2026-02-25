@@ -55,11 +55,7 @@ jobs:
         run: cargo build --all-targets
       
       - name: Run compatibility tests
-        run: |
-          cargo test --test upstream_compat
-          cargo test --test embeddings_compat
-          cargo test --test migration_roundtrip
-          cargo test --test golden
+        run: cargo test -p llm-cli --test compatibility
 
   # Golden output tests
   golden-tests:
@@ -78,11 +74,11 @@ jobs:
         run: cargo build --release
       
       - name: Run golden tests
-        run: cargo test --test golden
+        run: cargo test -p llm-cli --test golden
       
       - name: Update golden files (on failure, for debugging)
         if: failure()
-        run: UPDATE_GOLDEN=1 cargo test --test golden || true
+        run: UPDATE_GOLDEN=1 cargo test -p llm-cli --test golden || true
       
       - name: Upload golden diff
         if: failure()

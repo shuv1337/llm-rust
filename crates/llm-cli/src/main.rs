@@ -4,22 +4,21 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use llm_core::{
     aliases_path, available_models, backup_logs, core_version, detect_mime_from_content,
     detect_mime_from_path, detect_remote_mime, embeddings_db_path, execute_prompt_with_messages,
-    get_default_model, get_latest_conversation_id, get_schema, get_tool, keys_path, list_aliases,
-    list_key_names, list_logs, list_schemas, list_tools, load_conversation_messages, load_keys,
-    logs_db_path, logs_status, migrations::generate_response_ulid, prompt_debug_info, query_models,
-    remove_alias, resolve_key, save_key, set_alias, set_default_model, set_logging_enabled,
-    stream_prompt_with_messages, Attachment, KeyQuery, ListLogsOptions, ListToolsOptions,
-    LogEntry, MessageRole, ModelInfo, PromptConfig, PromptMessage, StreamSink,
-    list_template_loaders, list_templates, load_template, save_template, templates_path,
-    get_model_options, list_model_options, remove_model_options, set_model_options,
-    ModelOptions,
+    get_default_model, get_latest_conversation_id, get_model_options, get_schema, get_tool,
+    keys_path, list_aliases, list_key_names, list_logs, list_model_options, list_schemas,
+    list_template_loaders, list_templates, list_tools, load_conversation_messages, load_keys,
+    load_template, logs_db_path, logs_status, migrations::generate_response_ulid,
+    prompt_debug_info, query_models, remove_alias, remove_model_options, resolve_key, save_key,
+    save_template, set_alias, set_default_model, set_logging_enabled, set_model_options,
+    stream_prompt_with_messages, templates_path, Attachment, KeyQuery, ListLogsOptions,
+    ListToolsOptions, LogEntry, MessageRole, ModelInfo, ModelOptions, PromptConfig, PromptMessage,
+    StreamSink,
+};
+use llm_embeddings::{
+    delete_collection, list_collections, list_embedding_models, resolve_embedding_model,
+    Collection, EmbedItem, EmbeddingProvider, Entry, OpenAIEmbeddingProvider,
 };
 use llm_plugin_host::load_plugins;
-use llm_embeddings::{
-    EmbeddingProvider,
-    Collection, EmbedItem, Entry, OpenAIEmbeddingProvider, delete_collection, list_collections,
-    list_embedding_models, resolve_embedding_model,
-};
 use rpassword::prompt_password;
 use rustyline::{error::ReadlineError, DefaultEditor};
 use shell_words::split as shell_split;
@@ -81,7 +80,6 @@ impl PromptOptions {
         }
     }
 }
-
 
 #[derive(Args, Clone, Default)]
 struct PromptInputArgs {
@@ -227,7 +225,6 @@ struct ChatArgs {
     #[arg(long = "conversation-model")]
     conversation_model: Option<String>,
 }
-
 
 #[derive(Args)]
 struct CmdArgs {
@@ -432,7 +429,6 @@ struct KeysSetArgs {
     value: Option<String>,
 }
 
-
 #[derive(Args)]
 struct AliasesArgs {
     #[command(subcommand)]
@@ -478,6 +474,7 @@ struct LogsArgs {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum LogsSubcommand {
     /// Output the path to the logs.db file
     Path,
@@ -541,7 +538,11 @@ struct LogsListArgs {
     #[arg(short = 'x', long = "extract", conflicts_with = "extract_last")]
     extract: bool,
     /// Extract only the last fenced code block from the response
-    #[arg(long = "extract-last", visible_alias = "xl", conflicts_with = "extract")]
+    #[arg(
+        long = "extract-last",
+        visible_alias = "xl",
+        conflicts_with = "extract"
+    )]
     extract_last: bool,
     /// Short output format (prompt and response only, no headers or metadata)
     #[arg(long = "short")]
@@ -843,10 +844,10 @@ fn migrate_legacy_continuation_args(args: Vec<String>) -> Vec<String> {
     let mut result = Vec::with_capacity(args.len());
     let args_vec: Vec<String> = args;
     let mut i = 0;
-    
+
     while i < args_vec.len() {
         let arg = &args_vec[i];
-        
+
         // Handle `-c=<value>` form (unambiguous legacy syntax)
         if arg.starts_with("-c=") {
             let id = arg.strip_prefix("-c=").unwrap().to_string();
@@ -859,7 +860,7 @@ fn migrate_legacy_continuation_args(args: Vec<String>) -> Vec<String> {
             i += 1;
             continue;
         }
-        
+
         // Check for legacy `-c <value>` pattern
         if arg == "-c" && i + 1 < args_vec.len() {
             let next = &args_vec[i + 1];
@@ -869,7 +870,7 @@ fn migrate_legacy_continuation_args(args: Vec<String>) -> Vec<String> {
             if !next.starts_with('-') && !next.is_empty() {
                 // Check if there are more non-flag arguments after the potential ID
                 let has_more_args = args_vec[i + 2..].iter().any(|a| !a.starts_with('-'));
-                
+
                 if has_more_args {
                     // This looks like legacy `-c <id> <prompt>` usage
                     let id = next.clone();
@@ -885,14 +886,13 @@ fn migrate_legacy_continuation_args(args: Vec<String>) -> Vec<String> {
                 }
             }
         }
-        
+
         result.push(arg.clone());
         i += 1;
     }
-    
+
     result
 }
-
 
 fn main() -> Result<()> {
     let args = migrate_legacy_continuation_args(env::args().collect());
@@ -977,7 +977,7 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
         conversation_model,
         prompt: words,
     } = input;
-    
+
     // Resolve conversation ID: --continue uses latest, --cid uses explicit ID
     let conversation_id = if continue_conversation {
         // Get the most recent conversation ID from logs
@@ -985,14 +985,15 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
     } else {
         cid.clone()
     };
-    
+
     // Check if stdin has no attachment that uses it
     let stdin_used_for_attachment = attachments.contains(&"-".to_string());
-    
+
     // Read stdin if piped and not used for attachment
     let stdin_content = if !stdin_used_for_attachment && !io::stdin().is_terminal() {
         let mut buffer = String::new();
-        io::stdin().read_to_string(&mut buffer)
+        io::stdin()
+            .read_to_string(&mut buffer)
             .context("failed to read from stdin")?;
         // Only use stdin if it actually has content
         if buffer.trim().is_empty() {
@@ -1003,7 +1004,7 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
     } else {
         None
     };
-    
+
     // Merge stdin (first) with positional prompt (second) per upstream semantics
     let positional_prompt = words.join(" ");
     let prompt = match (&stdin_content, positional_prompt.is_empty()) {
@@ -1011,7 +1012,7 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
         (Some(stdin), false) => format!("{}\n{}", stdin.trim(), positional_prompt),
         (None, _) => positional_prompt,
     };
-    
+
     // Resolve model: explicit --model takes precedence, then --query discovery
     let resolved_model: Option<String> = if options.model.is_some() {
         options.model.clone()
@@ -1021,7 +1022,7 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
     } else {
         None
     };
-    
+
     info!(%prompt, "Executing prompt via llm-core");
     let config = PromptConfig {
         database_path: options.database.as_deref(),
@@ -1034,9 +1035,7 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
         log_override: options.log_override(),
         conversation_id: conversation_id.as_deref(),
         conversation_name: conversation_name.as_deref(),
-        conversation_model: conversation_model
-            .as_deref()
-            .or(resolved_model.as_deref()),
+        conversation_model: conversation_model.as_deref().or(resolved_model.as_deref()),
     };
     let streaming = !options.no_stream;
     log_prompt_debug(logging, streaming, &config)?;
@@ -1047,23 +1046,27 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
     } else {
         Vec::new()
     };
-    
+
     // Build new messages from current prompt
     let new_messages = build_messages(system.as_deref(), &prompt);
-    
+
     // Append new messages to history (or use new messages if no history)
     if messages.is_empty() {
         messages = new_messages;
     } else {
         // Skip system prompt from new messages if history already has one
         for msg in new_messages {
-            if matches!(msg.role, MessageRole::System) && messages.iter().any(|m| matches!(m.role, MessageRole::System)) {
+            if matches!(msg.role, MessageRole::System)
+                && messages
+                    .iter()
+                    .any(|m| matches!(m.role, MessageRole::System))
+            {
                 continue;
             }
             messages.push(msg);
         }
     }
-    
+
     if streaming {
         let mut sink = StdoutStreamSink::default();
         stream_prompt_with_messages(messages, resolved_attachments, config, &mut sink)?;
@@ -1071,17 +1074,16 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
         let response = execute_prompt_with_messages(messages, resolved_attachments, config)?;
         println!("{response}");
     }
-    
+
     // Note: --usage flag is implemented but requires UsageInfo from providers.
     // Currently providers return String; full usage printing needs provider changes
     // to return UsageInfo in the response.
     if options.usage {
         eprintln!("Token usage: (usage statistics require provider support)");
     }
-    
+
     Ok(())
 }
-
 
 fn run_chat(args: ChatArgs, logging: &LoggingOptions) -> Result<()> {
     let ChatArgs {
@@ -1099,7 +1101,7 @@ fn run_chat(args: ChatArgs, logging: &LoggingOptions) -> Result<()> {
 
     // Resolve or create conversation ID
     let conversation_id = if continue_conversation {
-        get_latest_conversation_id()?.unwrap_or_else(|| generate_response_ulid())
+        get_latest_conversation_id()?.unwrap_or_else(generate_response_ulid)
     } else if let Some(id) = cid {
         id
     } else {
@@ -1117,7 +1119,7 @@ fn run_chat(args: ChatArgs, logging: &LoggingOptions) -> Result<()> {
     };
 
     // Load conversation history if continuing
-    
+
     let mut messages = if is_continuation {
         load_conversation_messages(&conversation_id).unwrap_or_default()
     } else {
@@ -1126,14 +1128,18 @@ fn run_chat(args: ChatArgs, logging: &LoggingOptions) -> Result<()> {
 
     // Add system prompt if provided and not already in history
     if let Some(ref sys) = system {
-        let has_system = messages.iter().any(|m| matches!(m.role, MessageRole::System));
+        let has_system = messages
+            .iter()
+            .any(|m| matches!(m.role, MessageRole::System));
         if !has_system && !sys.trim().is_empty() {
             messages.insert(0, PromptMessage::system(sys.trim()));
         }
     }
 
-    println!("Chatting with {}. Type '!help' for commands.", 
-             resolved_model.as_deref().unwrap_or("default model"));
+    println!(
+        "Chatting with {}. Type '!help' for commands.",
+        resolved_model.as_deref().unwrap_or("default model")
+    );
     println!("Conversation ID: {}", conversation_id);
     println!();
 
@@ -1146,10 +1152,10 @@ fn run_chat(args: ChatArgs, logging: &LoggingOptions) -> Result<()> {
 
     loop {
         let prompt = if multi_line_mode { "... " } else { "> " };
-        
+
         // Reset interrupt flag at start of each prompt
         interrupted.store(false, Ordering::SeqCst);
-        
+
         let line = match editor.readline(prompt) {
             Ok(line) => line,
             Err(ReadlineError::Interrupted) => {
@@ -1196,7 +1202,7 @@ fn run_chat(args: ChatArgs, logging: &LoggingOptions) -> Result<()> {
         }
 
         let trimmed = line.trim();
-        
+
         // Handle special commands
         if trimmed.starts_with('!') {
             match trimmed {
@@ -1235,7 +1241,8 @@ fn run_chat(args: ChatArgs, logging: &LoggingOptions) -> Result<()> {
                 }
                 "!clear" => {
                     // Clear conversation history but keep system prompt
-                    let system_msg = messages.iter()
+                    let system_msg = messages
+                        .iter()
                         .find(|m| matches!(m.role, MessageRole::System))
                         .cloned();
                     messages.clear();
@@ -1251,7 +1258,10 @@ fn run_chat(args: ChatArgs, logging: &LoggingOptions) -> Result<()> {
                     continue;
                 }
                 _ => {
-                    println!("Unknown command: {}. Type '!help' for available commands.", trimmed);
+                    println!(
+                        "Unknown command: {}. Type '!help' for available commands.",
+                        trimmed
+                    );
                     continue;
                 }
             }
@@ -1350,12 +1360,12 @@ fn process_chat_input(
 
     // Stream the response
     let mut sink = ChatStreamSink::new(interrupted.clone());
-    
+
     match stream_prompt_with_messages(messages.clone(), Vec::new(), config, &mut sink) {
         Ok(response) => {
             // Add assistant response to history
             messages.push(PromptMessage::assistant(&response));
-            
+
             if options.usage {
                 eprintln!("Token usage: (usage statistics require provider support)");
             }
@@ -1363,7 +1373,7 @@ fn process_chat_input(
         Err(e) => {
             // Remove the user message if the request failed
             messages.pop();
-            
+
             if sink.was_interrupted() {
                 println!("\n[Response cancelled]");
             } else {
@@ -1401,7 +1411,7 @@ impl StreamSink for ChatStreamSink {
         if self.interrupted.load(Ordering::SeqCst) {
             bail!("Response cancelled by user");
         }
-        
+
         print!("{}", delta);
         io::stdout().flush().context("failed to flush stdout")?;
         self.started = true;
@@ -1445,7 +1455,7 @@ fn run_cmd(args: CmdArgs, logging: &LoggingOptions) -> Result<()> {
         conversation_model: args
             .conversation_model
             .as_deref()
-            .or_else(|| args.options.model.as_deref()),
+            .or(args.options.model.as_deref()),
     };
     log_prompt_debug(logging, false, &config)?;
 
@@ -1465,7 +1475,11 @@ fn run_cmd(args: CmdArgs, logging: &LoggingOptions) -> Result<()> {
     } else {
         // Skip system prompt from new messages if history already has one
         for msg in new_messages {
-            if matches!(msg.role, MessageRole::System) && messages.iter().any(|m| matches!(m.role, MessageRole::System)) {
+            if matches!(msg.role, MessageRole::System)
+                && messages
+                    .iter()
+                    .any(|m| matches!(m.role, MessageRole::System))
+            {
                 continue;
             }
             messages.push(msg);
@@ -1708,7 +1722,7 @@ fn handle_models(args: ModelsArgs) -> Result<()> {
 
 fn list_models(args: ModelsListArgs) -> Result<()> {
     let mut models: Vec<ModelInfo> = available_models()?;
-    
+
     // Apply filters
     if args.with_options {
         models.retain(|m| m.has_options);
@@ -1732,7 +1746,8 @@ fn list_models(args: ModelsListArgs) -> Result<()> {
         models.retain(|m| {
             let name_lower = m.name.to_ascii_lowercase();
             let desc_lower = m.description.to_ascii_lowercase();
-            let aliases_lower: Vec<String> = m.aliases.iter().map(|a| a.to_ascii_lowercase()).collect();
+            let aliases_lower: Vec<String> =
+                m.aliases.iter().map(|a| a.to_ascii_lowercase()).collect();
             terms.iter().all(|term| {
                 name_lower.contains(term)
                     || desc_lower.contains(term)
@@ -1740,10 +1755,10 @@ fn list_models(args: ModelsListArgs) -> Result<()> {
             })
         });
     }
-    
+
     models.sort_by(|a, b| a.name.cmp(&b.name));
     models.sort_by_key(|m| (!m.is_default, m.name.clone()));
-    
+
     if args.json {
         let json = serde_json::to_string_pretty(&models)?;
         println!("{json}");
@@ -1787,7 +1802,9 @@ fn default_model(args: ModelsDefaultArgs) -> Result<()> {
 fn handle_models_options(args: ModelsOptionsArgs) -> Result<()> {
     let command = args
         .command
-        .unwrap_or(ModelsOptionsSubcommand::List(ModelsOptionsListArgs { json: false }));
+        .unwrap_or(ModelsOptionsSubcommand::List(ModelsOptionsListArgs {
+            json: false,
+        }));
     match command {
         ModelsOptionsSubcommand::List(list_args) => models_options_list(list_args),
         ModelsOptionsSubcommand::Show(show_args) => models_options_show(show_args),
@@ -1840,30 +1857,40 @@ fn models_options_show(args: ModelsOptionsShowArgs) -> Result<()> {
 
 fn models_options_set(args: ModelsOptionsSetArgs) -> Result<()> {
     let mut opts = get_model_options(&args.model)?.unwrap_or_default();
-    
+
     match args.key.as_str() {
         "temperature" => {
-            let value: f32 = args.value.parse()
+            let value: f32 = args
+                .value
+                .parse()
                 .with_context(|| format!("Invalid temperature value: {}", args.value))?;
             opts.temperature = Some(value);
         }
         "max_tokens" | "max-tokens" => {
-            let value: u32 = args.value.parse()
+            let value: u32 = args
+                .value
+                .parse()
                 .with_context(|| format!("Invalid max_tokens value: {}", args.value))?;
             opts.max_tokens = Some(value);
         }
         "top_p" | "top-p" => {
-            let value: f32 = args.value.parse()
+            let value: f32 = args
+                .value
+                .parse()
                 .with_context(|| format!("Invalid top_p value: {}", args.value))?;
             opts.top_p = Some(value);
         }
         "frequency_penalty" | "frequency-penalty" => {
-            let value: f32 = args.value.parse()
+            let value: f32 = args
+                .value
+                .parse()
                 .with_context(|| format!("Invalid frequency_penalty value: {}", args.value))?;
             opts.frequency_penalty = Some(value);
         }
         "presence_penalty" | "presence-penalty" => {
-            let value: f32 = args.value.parse()
+            let value: f32 = args
+                .value
+                .parse()
                 .with_context(|| format!("Invalid presence_penalty value: {}", args.value))?;
             opts.presence_penalty = Some(value);
         }
@@ -1876,7 +1903,10 @@ fn models_options_set(args: ModelsOptionsSetArgs) -> Result<()> {
                 serde_json::from_str(&args.value)
                     .with_context(|| format!("Invalid stop sequences JSON: {}", args.value))?
             } else {
-                args.value.split(',').map(|s| s.trim().to_string()).collect()
+                args.value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect()
             };
             opts.stop = Some(stops);
         }
@@ -1884,9 +1914,12 @@ fn models_options_set(args: ModelsOptionsSetArgs) -> Result<()> {
             bail!("Unknown option key '{}'. Valid keys: temperature, max_tokens, top_p, frequency_penalty, presence_penalty, system, stop", other);
         }
     }
-    
+
     set_model_options(&args.model, &opts)?;
-    println!("Set {} = {} for model '{}'.", args.key, args.value, args.model);
+    println!(
+        "Set {} = {} for model '{}'.",
+        args.key, args.value, args.model
+    );
     Ok(())
 }
 
@@ -1972,11 +2005,10 @@ fn handle_keys(args: KeysArgs) -> Result<()> {
     Ok(())
 }
 
-
 fn handle_aliases(args: AliasesArgs) -> Result<()> {
     let command = args
         .command
-        .unwrap_or_else(|| AliasesSubcommand::List(AliasesListArgs { json: false }));
+        .unwrap_or(AliasesSubcommand::List(AliasesListArgs { json: false }));
     match command {
         AliasesSubcommand::Path => {
             let path = aliases_path()?;
@@ -2058,7 +2090,7 @@ fn handle_logs(args: LogsArgs) -> Result<()> {
 fn handle_templates(args: TemplatesArgs) -> Result<()> {
     let command = args
         .command
-        .unwrap_or_else(|| TemplatesSubcommand::List(TemplatesListArgs { json: false }));
+        .unwrap_or(TemplatesSubcommand::List(TemplatesListArgs { json: false }));
     match command {
         TemplatesSubcommand::Path => {
             let path = templates_path()?;
@@ -2163,7 +2195,7 @@ fn list_loaders_command(args: TemplatesLoadersArgs) -> Result<()> {
 fn handle_schemas(args: SchemasArgs) -> Result<()> {
     let command = args
         .command
-        .unwrap_or_else(|| SchemasSubcommand::List(SchemasListArgs { json: false }));
+        .unwrap_or(SchemasSubcommand::List(SchemasListArgs { json: false }));
     match command {
         SchemasSubcommand::List(list_args) => {
             list_schemas_command(list_args)?;
@@ -2263,9 +2295,10 @@ fn show_schemas_dsl_help() -> Result<()> {
 // ============================================================================
 
 fn handle_tools(args: ToolsArgs) -> Result<()> {
-    let command = args
-        .command
-        .unwrap_or_else(|| ToolsSubcommand::List(ToolsListArgs { json: false, functions: false }));
+    let command = args.command.unwrap_or(ToolsSubcommand::List(ToolsListArgs {
+        json: false,
+        functions: false,
+    }));
     match command {
         ToolsSubcommand::List(list_args) => {
             list_tools_command(list_args)?;
@@ -2301,13 +2334,21 @@ fn list_tools_command(args: ToolsListArgs) -> Result<()> {
         } else {
             format!("{} uses", tool.usage_count)
         };
-        let plugin_info = tool.plugin.as_ref()
+        let plugin_info = tool
+            .plugin
+            .as_ref()
             .map(|p| format!(" [{}]", p))
             .unwrap_or_default();
-        let desc = tool.description.as_ref()
+        let desc = tool
+            .description
+            .as_ref()
             .map(|d| {
                 let truncated: String = d.chars().take(50).collect();
-                if d.len() > 50 { format!(" - {}...", truncated) } else { format!(" - {}", truncated) }
+                if d.len() > 50 {
+                    format!(" - {}...", truncated)
+                } else {
+                    format!(" - {}", truncated)
+                }
             })
             .unwrap_or_default();
         println!("  {}{} ({}){}", name, plugin_info, usage, desc);
@@ -2395,7 +2436,8 @@ fn handle_embed(args: EmbedArgs) -> Result<()> {
         .context("failed to create embedding provider")?;
 
     // Generate embedding
-    let result = provider.embed(&text)
+    let result = provider
+        .embed(&text)
         .context("failed to generate embedding")?;
 
     // Store if requested
@@ -2419,7 +2461,8 @@ fn handle_embed(args: EmbedArgs) -> Result<()> {
             .transpose()
             .context("invalid JSON metadata")?;
 
-        collection.store(&embed_id, &result.embedding, Some(&text), metadata_value)
+        collection
+            .store(&embed_id, &result.embedding, Some(&text), metadata_value)
             .context("failed to store embedding")?;
 
         if json {
@@ -2432,7 +2475,10 @@ fn handle_embed(args: EmbedArgs) -> Result<()> {
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
-            println!("Stored embedding '{}' in collection '{}'", embed_id, collection_name);
+            println!(
+                "Stored embedding '{}' in collection '{}'",
+                embed_id, collection_name
+            );
             println!("Model: {}", resolved_model);
             println!("Dimensions: {}", result.embedding.len());
             if let Some(tokens) = result.tokens {
@@ -2443,7 +2489,11 @@ fn handle_embed(args: EmbedArgs) -> Result<()> {
         // Output the embedding
         if raw {
             // Output as space-separated floats
-            let values: Vec<String> = result.embedding.iter().map(|f: &f32| f.to_string()).collect();
+            let values: Vec<String> = result
+                .embedding
+                .iter()
+                .map(|f: &f32| f.to_string())
+                .collect();
             println!("{}", values.join(" "));
         } else if json {
             let output = serde_json::json!({
@@ -2473,7 +2523,11 @@ fn handle_embed(args: EmbedArgs) -> Result<()> {
 }
 
 fn handle_embed_models(args: EmbedModelsArgs) -> Result<()> {
-    let command = args.command.unwrap_or(EmbedModelsSubcommand::List(EmbedModelsListArgs { json: false }));
+    let command = args
+        .command
+        .unwrap_or(EmbedModelsSubcommand::List(EmbedModelsListArgs {
+            json: false,
+        }));
     match command {
         EmbedModelsSubcommand::List(list_args) => {
             embed_models_list(list_args)?;
@@ -2501,10 +2555,14 @@ fn embed_models_list(args: EmbedModelsListArgs) -> Result<()> {
         } else {
             format!(" (aliases: {})", model.aliases.join(", "))
         };
-        let dims = model.dimensions
+        let dims = model
+            .dimensions
             .map(|d| format!("{} dims", d))
             .unwrap_or_else(|| "unknown dims".to_string());
-        println!("  {} ({}) - {}{}", model.model_id, model.provider, dims, aliases);
+        println!(
+            "  {} ({}) - {}{}",
+            model.model_id, model.provider, dims, aliases
+        );
     }
     Ok(())
 }
@@ -2707,7 +2765,10 @@ fn handle_similar(args: SimilarArgs) -> Result<()> {
 
         println!("Similar entries in collection '{}':\n", collection);
         for (i, entry) in results.iter().enumerate() {
-            let score = entry.score.map(|s| format!("{:.4}", s)).unwrap_or_else(|| "N/A".to_string());
+            let score = entry
+                .score
+                .map(|s| format!("{:.4}", s))
+                .unwrap_or_else(|| "N/A".to_string());
             println!("{}. {} (score: {})", i + 1, entry.id, score);
             if let Some(ref content) = entry.content {
                 let preview: String = content.chars().take(100).collect();
@@ -2725,10 +2786,12 @@ fn handle_similar(args: SimilarArgs) -> Result<()> {
 }
 
 fn handle_collections(args: CollectionsArgs) -> Result<()> {
-    let command = args.command.unwrap_or(CollectionsSubcommand::List(CollectionsListArgs {
-        json: false,
-        database: None,
-    }));
+    let command = args
+        .command
+        .unwrap_or(CollectionsSubcommand::List(CollectionsListArgs {
+            json: false,
+            database: None,
+        }));
     match command {
         CollectionsSubcommand::List(list_args) => {
             collections_list(list_args)?;
@@ -2744,7 +2807,8 @@ fn handle_collections(args: CollectionsArgs) -> Result<()> {
 }
 
 fn collections_list(args: CollectionsListArgs) -> Result<()> {
-    let db_path = args.database
+    let db_path = args
+        .database
         .map(PathBuf::from)
         .or_else(|| embeddings_db_path().ok())
         .ok_or_else(|| anyhow!("failed to determine embeddings database path"))?;
@@ -2759,16 +2823,17 @@ fn collections_list(args: CollectionsListArgs) -> Result<()> {
         return Ok(());
     }
 
-    let collections = list_collections(&db_path)
-        .context("failed to list collections")?;
+    let collections = list_collections(&db_path).context("failed to list collections")?;
 
     if args.json {
         let items: Vec<serde_json::Value> = collections
             .iter()
-            .map(|(name, model)| serde_json::json!({
-                "name": name,
-                "model": model,
-            }))
+            .map(|(name, model)| {
+                serde_json::json!({
+                    "name": name,
+                    "model": model,
+                })
+            })
             .collect();
         let json = serde_json::to_string_pretty(&items)?;
         println!("{json}");
@@ -2794,7 +2859,8 @@ fn collections_path() -> Result<()> {
 }
 
 fn collections_delete(args: CollectionsDeleteArgs) -> Result<()> {
-    let db_path = args.database
+    let db_path = args
+        .database
         .map(PathBuf::from)
         .or_else(|| embeddings_db_path().ok())
         .ok_or_else(|| anyhow!("failed to determine embeddings database path"))?;
@@ -2803,8 +2869,7 @@ fn collections_delete(args: CollectionsDeleteArgs) -> Result<()> {
         bail!("Embeddings database not found at: {}", db_path.display());
     }
 
-    let deleted = delete_collection(&db_path, &args.name)
-        .context("failed to delete collection")?;
+    let deleted = delete_collection(&db_path, &args.name).context("failed to delete collection")?;
 
     if deleted {
         println!("Deleted collection '{}'", args.name);
@@ -2874,10 +2939,10 @@ fn extract_code_blocks(text: &str) -> Vec<String> {
     let mut current_block = String::new();
     let mut fence_char = ' ';
     let mut fence_len = 0;
-    
+
     for line in text.lines() {
         let trimmed = line.trim_start();
-        
+
         if !in_block {
             // Check for opening fence (``` or ~~~)
             if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
@@ -2891,8 +2956,10 @@ fn extract_code_blocks(text: &str) -> Vec<String> {
             }
         } else {
             // Check for closing fence
-            let close_fence: String = std::iter::repeat(fence_char).take(fence_len).collect();
-            if trimmed.starts_with(&close_fence) && trimmed.trim_start_matches(fence_char).trim().is_empty() {
+            let close_fence: String = std::iter::repeat_n(fence_char, fence_len).collect();
+            if trimmed.starts_with(&close_fence)
+                && trimmed.trim_start_matches(fence_char).trim().is_empty()
+            {
                 blocks.push(current_block.trim_end().to_string());
                 in_block = false;
                 current_block.clear();
@@ -2904,12 +2971,12 @@ fn extract_code_blocks(text: &str) -> Vec<String> {
             }
         }
     }
-    
+
     // If we ended while still in a block, include it anyway
     if in_block && !current_block.is_empty() {
         blocks.push(current_block.trim_end().to_string());
     }
-    
+
     blocks
 }
 
@@ -2952,7 +3019,7 @@ fn list_logs_command(args: LogsListArgs) -> Result<()> {
     } = args;
 
     let mut options = ListLogsOptions::default();
-    
+
     // Handle --latest: override count to 1
     if latest {
         options.limit = Some(1);
@@ -2962,7 +3029,7 @@ fn list_logs_command(args: LogsListArgs) -> Result<()> {
             value => options.limit = Some(value),
         }
     }
-    
+
     options.newest_first = true;
     options.model = model;
     options.query = query;
@@ -2971,22 +3038,22 @@ fn list_logs_command(args: LogsListArgs) -> Result<()> {
     options.since = since;
     options.before = before;
     options.database_path = database.or(path).map(PathBuf::from);
-    
+
     // Handle --tools filter
     if with_tools {
         options.with_tool_calls = Some(true);
     }
-    
+
     // Handle --schema filter (placeholder)
     if let Some(schema_id) = schema {
         options.schema_id = Some(schema_id);
     }
-    
+
     // Handle --fragment filter (placeholder)
     if let Some(frag_id) = fragment {
         options.fragment_id = Some(frag_id);
     }
-    
+
     // Handle --current: get the latest conversation ID and filter by it
     let conversation_id = if current {
         get_latest_conversation_id()?
@@ -2996,7 +3063,7 @@ fn list_logs_command(args: LogsListArgs) -> Result<()> {
     options.conversation_id = conversation_id;
 
     let entries = list_logs(options)?;
-    
+
     // Build display options
     let display_opts = LogDisplayOptions {
         response_only,
@@ -3005,7 +3072,7 @@ fn list_logs_command(args: LogsListArgs) -> Result<()> {
         short,
         truncate,
     };
-    
+
     if json {
         let json = serde_json::to_string_pretty(&entries)?;
         println!("{json}");
@@ -3028,7 +3095,7 @@ fn list_logs_command(args: LogsListArgs) -> Result<()> {
 
 fn display_log_entry_with_options(entry: &LogEntry, opts: &LogDisplayOptions) {
     let response_text = entry.response.as_deref().unwrap_or("");
-    
+
     // Handle extract modes
     if opts.extract || opts.extract_last {
         let blocks = extract_code_blocks(response_text);
@@ -3048,7 +3115,7 @@ fn display_log_entry_with_options(entry: &LogEntry, opts: &LogDisplayOptions) {
         }
         return;
     }
-    
+
     // Handle response-only mode
     if opts.response_only {
         let text = if opts.truncate {
@@ -3059,7 +3126,7 @@ fn display_log_entry_with_options(entry: &LogEntry, opts: &LogDisplayOptions) {
         println!("{}", text);
         return;
     }
-    
+
     // Handle short mode (prompt and response only, no metadata)
     if opts.short {
         let prompt_text = entry.prompt.as_deref().unwrap_or("-- none --");
@@ -3075,7 +3142,7 @@ fn display_log_entry_with_options(entry: &LogEntry, opts: &LogDisplayOptions) {
         println!("Response: {}", response_display);
         return;
     }
-    
+
     // Full display mode
     display_log_entry_full(entry, opts.truncate);
 }
@@ -3112,7 +3179,7 @@ fn display_log_entry_full(entry: &LogEntry, truncate: bool) {
     if let Some(duration) = entry.duration_ms {
         println!("Duration: {} ms", duration);
     }
-    
+
     let prompt_text = entry
         .prompt
         .as_deref()
@@ -3123,7 +3190,7 @@ fn display_log_entry_full(entry: &LogEntry, truncate: bool) {
         .as_deref()
         .filter(|r| !r.is_empty())
         .unwrap_or("-- none --");
-    
+
     let (prompt_display, response_display) = if truncate {
         (
             truncate_text(prompt_text, TRUNCATE_LENGTH),
@@ -3132,18 +3199,16 @@ fn display_log_entry_full(entry: &LogEntry, truncate: bool) {
     } else {
         (prompt_text.to_string(), response_text.to_string())
     };
-    
+
     println!("\nPrompt:\n{}\n", prompt_display);
     println!("Response:\n{}\n", response_display);
-    
+
     if let Some(input) = entry.input_tokens {
         if let Some(output) = entry.output_tokens {
             println!("Token usage: input {} • output {}", input, output);
         }
     }
 }
-
-
 
 fn human_readable_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
@@ -3190,11 +3255,11 @@ fn resolve_prompt_attachments(
         resolved.push(build_attachment_from_source(value, None, &mut stdin_state)?);
     }
     if !attachment_types.is_empty() {
-        if attachment_types.len() % 2 != 0 {
+        if !attachment_types.len().is_multiple_of(2) {
             bail!("each --attachment-type must include a path/URL and a mimetype");
         }
         for pair in attachment_types.chunks(2) {
-            let source = pair.get(0).expect("path present");
+            let source = pair.first().expect("path present");
             let mimetype = pair.get(1).expect("mimetype present");
             resolved.push(build_attachment_from_source(
                 source,

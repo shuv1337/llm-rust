@@ -234,15 +234,15 @@ fn create_embeddings_schema(conn: &Connection) -> Result<()> {
 fn read_upstream_integer_id_responses() -> Result<()> {
     let tmp = TempDir::new()?;
     let db_path = tmp.path().join("upstream.db");
-    
+
     create_upstream_fixture_db(&db_path)?;
-    
+
     let conn = Connection::open(&db_path)?;
-    
+
     let mut stmt = conn.prepare(
-        "SELECT id, model, prompt, response, conversation_id FROM responses ORDER BY id"
+        "SELECT id, model, prompt, response, conversation_id FROM responses ORDER BY id",
     )?;
-    
+
     let rows: Vec<(i64, String, String, String, String)> = stmt
         .query_map([], |row| {
             Ok((
@@ -254,13 +254,13 @@ fn read_upstream_integer_id_responses() -> Result<()> {
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    
+
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].0, 1); // Integer ID
     assert_eq!(rows[0].1, "openai/gpt-4o");
     assert_eq!(rows[0].2, "Hello world");
     assert_eq!(rows[0].4, "conv-001");
-    
+
     Ok(())
 }
 
@@ -268,25 +268,21 @@ fn read_upstream_integer_id_responses() -> Result<()> {
 fn read_upstream_conversations() -> Result<()> {
     let tmp = TempDir::new()?;
     let db_path = tmp.path().join("upstream.db");
-    
+
     create_upstream_fixture_db(&db_path)?;
-    
+
     let conn = Connection::open(&db_path)?;
-    
-    let mut stmt = conn.prepare(
-        "SELECT id, name, model FROM conversations ORDER BY id"
-    )?;
-    
+
+    let mut stmt = conn.prepare("SELECT id, name, model FROM conversations ORDER BY id")?;
+
     let rows: Vec<(String, Option<String>, Option<String>)> = stmt
-        .query_map([], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<Result<Vec<_>, _>>()?;
-    
+
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].0, "conv-001");
     assert_eq!(rows[0].1, Some("Test Conversation 1".to_string()));
-    
+
     Ok(())
 }
 
@@ -294,19 +290,19 @@ fn read_upstream_conversations() -> Result<()> {
 fn upstream_fts_search() -> Result<()> {
     let tmp = TempDir::new()?;
     let db_path = tmp.path().join("upstream.db");
-    
+
     create_upstream_fixture_db(&db_path)?;
-    
+
     let conn = Connection::open(&db_path)?;
-    
+
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM responses_fts WHERE responses_fts MATCH 'Hello'",
         [],
         |row| row.get(0),
     )?;
-    
+
     assert_eq!(count, 1);
-    
+
     Ok(())
 }
 
@@ -314,22 +310,22 @@ fn upstream_fts_search() -> Result<()> {
 fn upstream_schema_has_all_tables() -> Result<()> {
     let tmp = TempDir::new()?;
     let db_path = tmp.path().join("upstream.db");
-    
+
     create_upstream_fixture_db(&db_path)?;
-    
+
     let conn = Connection::open(&db_path)?;
-    
+
     let tables: Vec<String> = conn
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")?
         .query_map([], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    
+
     assert!(tables.contains(&"conversations".to_string()));
     assert!(tables.contains(&"responses".to_string()));
     assert!(tables.contains(&"attachments".to_string()));
     assert!(tables.contains(&"schemas".to_string()));
     assert!(tables.contains(&"tools".to_string()));
-    
+
     Ok(())
 }
 
@@ -337,20 +333,20 @@ fn upstream_schema_has_all_tables() -> Result<()> {
 fn upstream_fts_triggers_exist() -> Result<()> {
     let tmp = TempDir::new()?;
     let db_path = tmp.path().join("upstream.db");
-    
+
     create_upstream_fixture_db(&db_path)?;
-    
+
     let conn = Connection::open(&db_path)?;
-    
+
     let triggers: Vec<String> = conn
         .prepare("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name")?
         .query_map([], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    
+
     assert!(triggers.contains(&"responses_ai".to_string()));
     assert!(triggers.contains(&"responses_ad".to_string()));
     assert!(triggers.contains(&"responses_au".to_string()));
-    
+
     Ok(())
 }
 
@@ -358,20 +354,20 @@ fn upstream_fts_triggers_exist() -> Result<()> {
 fn upstream_indexes_exist() -> Result<()> {
     let tmp = TempDir::new()?;
     let db_path = tmp.path().join("upstream.db");
-    
+
     create_upstream_fixture_db(&db_path)?;
-    
+
     let conn = Connection::open(&db_path)?;
-    
+
     let indexes: Vec<String> = conn
         .prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")?
         .query_map([], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    
+
     assert!(indexes.iter().any(|i| i.contains("datetime")));
     assert!(indexes.iter().any(|i| i.contains("conversation_id")));
     assert!(indexes.iter().any(|i| i.contains("model")));
-    
+
     Ok(())
 }
 
@@ -383,21 +379,21 @@ fn upstream_indexes_exist() -> Result<()> {
 fn read_keys_with_warning_note() -> Result<()> {
     let tmp = TempDir::new()?;
     let keys_path = tmp.path().join("keys.json");
-    
+
     let keys_json = serde_json::json!({
         "// Note": "This file stores secret API credentials. Do not share!",
         "openai": "sk-test-key",
         "anthropic": "sk-ant-test-key"
     });
-    
+
     fs::write(&keys_path, serde_json::to_string_pretty(&keys_json)?)?;
-    
+
     let content = fs::read_to_string(&keys_path)?;
     let parsed: serde_json::Value = serde_json::from_str(&content)?;
-    
+
     assert!(parsed.get("// Note").is_some());
     assert_eq!(parsed["openai"], "sk-test-key");
-    
+
     Ok(())
 }
 
@@ -405,19 +401,19 @@ fn read_keys_with_warning_note() -> Result<()> {
 fn read_aliases_json() -> Result<()> {
     let tmp = TempDir::new()?;
     let aliases_path = tmp.path().join("aliases.json");
-    
+
     let aliases = serde_json::json!({
         "fast": "openai/gpt-4o-mini",
         "smart": "anthropic/claude-3-opus"
     });
-    
+
     fs::write(&aliases_path, serde_json::to_string_pretty(&aliases)?)?;
-    
+
     let content = fs::read_to_string(&aliases_path)?;
     let parsed: serde_json::Value = serde_json::from_str(&content)?;
-    
+
     assert_eq!(parsed["fast"], "openai/gpt-4o-mini");
-    
+
     Ok(())
 }
 
@@ -425,12 +421,12 @@ fn read_aliases_json() -> Result<()> {
 fn read_default_model_txt() -> Result<()> {
     let tmp = TempDir::new()?;
     let model_path = tmp.path().join("default_model.txt");
-    
+
     fs::write(&model_path, "openai/gpt-4o\n")?;
-    
+
     let content = fs::read_to_string(&model_path)?.trim().to_string();
     assert_eq!(content, "openai/gpt-4o");
-    
+
     Ok(())
 }
 
@@ -438,12 +434,12 @@ fn read_default_model_txt() -> Result<()> {
 fn read_default_model_legacy() -> Result<()> {
     let tmp = TempDir::new()?;
     let model_path = tmp.path().join("default-model.txt");
-    
+
     fs::write(&model_path, "anthropic/claude-3-sonnet\n")?;
-    
+
     let content = fs::read_to_string(&model_path)?.trim().to_string();
     assert_eq!(content, "anthropic/claude-3-sonnet");
-    
+
     Ok(())
 }
 
@@ -452,10 +448,10 @@ fn default_model_fallback() -> Result<()> {
     let tmp = TempDir::new()?;
     let new_path = tmp.path().join("default_model.txt");
     let legacy_path = tmp.path().join("default-model.txt");
-    
+
     // Only legacy exists
     fs::write(&legacy_path, "legacy-model")?;
-    
+
     let model = if new_path.exists() {
         fs::read_to_string(&new_path)?.trim().to_string()
     } else if legacy_path.exists() {
@@ -463,9 +459,9 @@ fn default_model_fallback() -> Result<()> {
     } else {
         "openai/gpt-4o-mini".to_string()
     };
-    
+
     assert_eq!(model, "legacy-model");
-    
+
     Ok(())
 }
 
@@ -477,18 +473,18 @@ fn default_model_fallback() -> Result<()> {
 fn embeddings_schema_has_all_tables() -> Result<()> {
     let tmp = TempDir::new()?;
     let db_path = tmp.path().join("embeddings.db");
-    
+
     let conn = Connection::open(&db_path)?;
     create_embeddings_schema(&conn)?;
-    
+
     let tables: Vec<String> = conn
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")?
         .query_map([], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    
+
     assert!(tables.contains(&"collections".to_string()));
     assert!(tables.contains(&"embeddings".to_string()));
-    
+
     Ok(())
 }
 
@@ -496,17 +492,17 @@ fn embeddings_schema_has_all_tables() -> Result<()> {
 fn embeddings_has_content_hash_index() -> Result<()> {
     let tmp = TempDir::new()?;
     let db_path = tmp.path().join("embeddings.db");
-    
+
     let conn = Connection::open(&db_path)?;
     create_embeddings_schema(&conn)?;
-    
+
     let indexes: Vec<String> = conn
         .prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")?
         .query_map([], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    
+
     assert!(indexes.iter().any(|i| i.contains("content_hash")));
-    
+
     Ok(())
 }
 
@@ -518,20 +514,20 @@ fn embeddings_has_content_hash_index() -> Result<()> {
 fn token_counts_stored() -> Result<()> {
     let tmp = TempDir::new()?;
     let db_path = tmp.path().join("upstream.db");
-    
+
     create_upstream_fixture_db(&db_path)?;
-    
+
     let conn = Connection::open(&db_path)?;
-    
+
     let (input, output): (i64, i64) = conn.query_row(
         "SELECT input_tokens, output_tokens FROM responses WHERE id = 1",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    
+
     assert_eq!(input, 10);
     assert_eq!(output, 15);
-    
+
     Ok(())
 }
 
@@ -539,18 +535,18 @@ fn token_counts_stored() -> Result<()> {
 fn duration_stored() -> Result<()> {
     let tmp = TempDir::new()?;
     let db_path = tmp.path().join("upstream.db");
-    
+
     create_upstream_fixture_db(&db_path)?;
-    
+
     let conn = Connection::open(&db_path)?;
-    
+
     let duration: i64 = conn.query_row(
         "SELECT duration_ms FROM responses WHERE id = 1",
         [],
         |row| row.get(0),
     )?;
-    
+
     assert_eq!(duration, 250);
-    
+
     Ok(())
 }

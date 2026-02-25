@@ -124,7 +124,8 @@ pub fn delete_template(name: &str) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
-    fs::remove_file(&path).with_context(|| format!("Failed to delete template: {}", path.display()))?;
+    fs::remove_file(&path)
+        .with_context(|| format!("Failed to delete template: {}", path.display()))?;
     Ok(true)
 }
 

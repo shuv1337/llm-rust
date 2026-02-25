@@ -120,7 +120,7 @@ pub trait EmbeddingProvider: Send + Sync {
 pub struct OpenAIEmbeddingConfig {
     /// API key for OpenAI.
     pub api_key: String,
-    /// Base URL for the API (default: https://api.openai.com/v1).
+    /// Base URL for the API (default: <https://api.openai.com/v1>).
     pub base_url: String,
     /// Model to use for embeddings.
     pub model: String,
@@ -170,8 +170,8 @@ impl OpenAIEmbeddingProvider {
             .or_else(|_| env::var("LLM_OPENAI_API_KEY"))
             .context("OpenAI API key not found. Set OPENAI_API_KEY or LLM_OPENAI_API_KEY")?;
 
-        let base_url = env::var("OPENAI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+        let base_url =
+            env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
 
         let config = OpenAIEmbeddingConfig {
             api_key,
@@ -266,7 +266,9 @@ impl EmbeddingProvider for OpenAIEmbeddingProvider {
         let (dimensions, aliases) = match self.config.model.as_str() {
             "text-embedding-3-small" => (Some(1536), vec!["3-small".to_string()]),
             "text-embedding-3-large" => (Some(3072), vec!["3-large".to_string()]),
-            "text-embedding-ada-002" => (Some(1536), vec!["ada".to_string(), "ada-002".to_string()]),
+            "text-embedding-ada-002" => {
+                (Some(1536), vec!["ada".to_string(), "ada-002".to_string()])
+            }
             _ => (None, vec![]),
         };
 
@@ -454,7 +456,9 @@ mod tests {
     fn test_list_embedding_models() {
         let models = list_embedding_models();
         assert_eq!(models.len(), 3);
-        assert!(models.iter().any(|m| m.model_id == "text-embedding-3-small"));
+        assert!(models
+            .iter()
+            .any(|m| m.model_id == "text-embedding-3-small"));
     }
 
     #[test]

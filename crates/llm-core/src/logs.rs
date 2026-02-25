@@ -1,6 +1,6 @@
+use crate::migrations::{generate_response_ulid, run_migrations};
 use crate::providers::{MessageRole, PromptMessage};
 use crate::{logs_db_path, user_dir};
-use crate::migrations::{run_migrations, generate_response_ulid};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, types::Value, Connection, OptionalExtension};
@@ -118,7 +118,7 @@ impl LogEntry {
     pub fn has_tool_calls(&self) -> bool {
         self.tool_calls_json
             .as_ref()
-            .map_or(false, |s| !s.is_empty() && s != "[]" && s != "null")
+            .is_some_and(|s| !s.is_empty() && s != "[]" && s != "null")
     }
 }
 
@@ -237,7 +237,8 @@ pub fn list_logs(options: ListLogsOptions) -> Result<Vec<LogEntry>> {
     let conn = open_database(&path)?;
 
     // Determine whether to use FTS
-    let use_fts = options.use_fts.unwrap_or(true) && options.query.is_some() && has_fts_table(&conn);
+    let use_fts =
+        options.use_fts.unwrap_or(true) && options.query.is_some() && has_fts_table(&conn);
 
     let mut sql = if use_fts && options.query.is_some() {
         // Use FTS join for better search ranking
@@ -269,7 +270,7 @@ pub fn list_logs(options: ListLogsOptions) -> Result<Vec<LogEntry>> {
              LEFT JOIN conversations ON conversations.id = responses.conversation_id",
         )
     };
-    
+
     let mut conditions: Vec<String> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
 
@@ -384,7 +385,7 @@ pub fn list_logs(options: ListLogsOptions) -> Result<Vec<LogEntry>> {
 
 /// Persist a log record if logging is enabled or forced, with optional database path override.
 pub(crate) fn record_log_entry(
-    record: LogRecord, 
+    record: LogRecord,
     force_logging: bool,
     database_path: Option<&Path>,
 ) -> Result<()> {
@@ -396,7 +397,7 @@ pub(crate) fn record_log_entry(
         .unwrap_or_else(|| logs_db_path().expect("logs_db_path should be available"));
     let conn = open_database(&path)?;
     let now = Utc::now().to_rfc3339();
-    
+
     // Generate a new ULID for this response
     let response_id = generate_response_ulid();
 
@@ -480,17 +481,17 @@ fn open_database(path: &Path) -> Result<Connection> {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
-    
+
     // Run migrations to ensure schema is up to date
     run_migrations(path)?;
-    
+
     let conn =
         Connection::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
-    
+
     // Set pragmas
     conn.execute_batch("PRAGMA journal_mode=WAL;")
         .context("Failed to set journal mode")?;
-    
+
     Ok(conn)
 }
 
@@ -506,7 +507,6 @@ fn bind_var(index: usize) -> String {
     format!("?{}", index)
 }
 
-
 /// Load conversation messages for continuation, reconstructing prompt/response history.
 ///
 /// Returns messages in chronological order (oldest first), with system prompts at the
@@ -519,13 +519,13 @@ pub fn load_conversation_messages(conversation_id: &str) -> Result<Vec<PromptMes
     }
 
     let conn = open_database(&path)?;
-    
+
     // Query all responses for this conversation, ordered by id (chronological)
     let mut stmt = conn.prepare(
         "SELECT prompt, system, response, prompt_json \
          FROM responses \
          WHERE conversation_id = ? \
-         ORDER BY id ASC"
+         ORDER BY id ASC",
     )?;
 
     let rows = stmt.query_map(params![conversation_id], |row| {
@@ -591,7 +591,9 @@ pub fn load_conversation_messages(conversation_id: &str) -> Result<Vec<PromptMes
                         // Check if the last message is already this response
                         let should_add = messages
                             .last()
-                            .map(|m| !matches!(m.role, MessageRole::Assistant) || m.content != trimmed)
+                            .map(|m| {
+                                !matches!(m.role, MessageRole::Assistant) || m.content != trimmed
+                            })
                             .unwrap_or(true);
                         if should_add {
                             messages.push(PromptMessage::assistant(trimmed));
@@ -619,7 +621,10 @@ pub fn load_conversation_messages(conversation_id: &str) -> Result<Vec<PromptMes
 
     // If we collected a system prompt, prepend it to the messages
     if let Some(sys) = seen_system {
-        if !messages.iter().any(|m| matches!(m.role, MessageRole::System) && m.content == sys) {
+        if !messages
+            .iter()
+            .any(|m| matches!(m.role, MessageRole::System) && m.content == sys)
+        {
             messages.insert(0, PromptMessage::system(sys));
         }
     }
@@ -638,7 +643,7 @@ pub fn get_latest_conversation_id() -> Result<Option<String>> {
     }
 
     let conn = open_database(&path)?;
-    
+
     let result: Option<String> = conn
         .query_row(
             "SELECT conversation_id FROM responses \
@@ -679,7 +684,7 @@ pub fn list_schemas() -> Result<Vec<SchemaEntry>> {
     }
 
     let conn = open_database(&path)?;
-    
+
     // Check if schemas table exists
     let has_schemas_table: bool = conn
         .query_row(
@@ -688,7 +693,7 @@ pub fn list_schemas() -> Result<Vec<SchemaEntry>> {
             |row| row.get(0),
         )
         .unwrap_or(false);
-    
+
     if !has_schemas_table {
         return Ok(Vec::new());
     }
@@ -698,7 +703,7 @@ pub fn list_schemas() -> Result<Vec<SchemaEntry>> {
          FROM schemas s \
          LEFT JOIN responses r ON r.schema_id = s.id \
          GROUP BY s.id, s.content \
-         ORDER BY usage_count DESC, s.id ASC"
+         ORDER BY usage_count DESC, s.id ASC",
     )?;
 
     let rows = stmt.query_map([], |row| {
@@ -725,7 +730,7 @@ pub fn get_schema(id: &str) -> Result<Option<SchemaEntry>> {
     }
 
     let conn = open_database(&path)?;
-    
+
     // Check if schemas table exists
     let has_schemas_table: bool = conn
         .query_row(
@@ -734,7 +739,7 @@ pub fn get_schema(id: &str) -> Result<Option<SchemaEntry>> {
             |row| row.get(0),
         )
         .unwrap_or(false);
-    
+
     if !has_schemas_table {
         return Ok(None);
     }
@@ -803,7 +808,7 @@ pub fn list_tools(options: ListToolsOptions) -> Result<Vec<ToolEntry>> {
     }
 
     let conn = open_database(&path)?;
-    
+
     // Check if tools table exists
     let has_tools_table: bool = conn
         .query_row(
@@ -812,7 +817,7 @@ pub fn list_tools(options: ListToolsOptions) -> Result<Vec<ToolEntry>> {
             |row| row.get(0),
         )
         .unwrap_or(false);
-    
+
     if !has_tools_table {
         return Ok(Vec::new());
     }
@@ -821,7 +826,7 @@ pub fn list_tools(options: ListToolsOptions) -> Result<Vec<ToolEntry>> {
         "SELECT t.id, t.hash, t.name, t.description, t.input_schema, t.plugin, \
          COUNT(tr.response_id) as usage_count \
          FROM tools t \
-         LEFT JOIN tool_responses tr ON tr.tool_id = t.id"
+         LEFT JOIN tool_responses tr ON tr.tool_id = t.id",
     );
 
     let mut conditions: Vec<String> = Vec::new();
@@ -846,20 +851,17 @@ pub fn list_tools(options: ListToolsOptions) -> Result<Vec<ToolEntry>> {
 
     let mut stmt = conn.prepare(&sql)?;
 
-    let rows = stmt.query_map(
-        rusqlite::params_from_iter(params_vec.iter()),
-        |row| {
-            Ok(ToolEntry {
-                id: row.get(0)?,
-                hash: row.get(1)?,
-                name: row.get(2)?,
-                description: row.get(3)?,
-                input_schema: row.get(4)?,
-                plugin: row.get(5)?,
-                usage_count: row.get(6)?,
-            })
-        },
-    )?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params_vec.iter()), |row| {
+        Ok(ToolEntry {
+            id: row.get(0)?,
+            hash: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            input_schema: row.get(4)?,
+            plugin: row.get(5)?,
+            usage_count: row.get(6)?,
+        })
+    })?;
 
     let mut tools = Vec::new();
     for row in rows {
@@ -877,7 +879,7 @@ pub fn get_tool(name: &str) -> Result<Option<ToolEntry>> {
     }
 
     let conn = open_database(&path)?;
-    
+
     // Check if tools table exists
     let has_tools_table: bool = conn
         .query_row(
@@ -886,7 +888,7 @@ pub fn get_tool(name: &str) -> Result<Option<ToolEntry>> {
             |row| row.get(0),
         )
         .unwrap_or(false);
-    
+
     if !has_tools_table {
         return Ok(None);
     }
@@ -961,7 +963,10 @@ mod tests {
         assert!(!entry.has_tool_calls());
 
         // Actual tool calls
-        entry.tool_calls_json = Some(r#"[{"id":"call_1","type":"function","function":{"name":"test","arguments":"{}"}}]"#.to_string());
+        entry.tool_calls_json = Some(
+            r#"[{"id":"call_1","type":"function","function":{"name":"test","arguments":"{}"}}]"#
+                .to_string(),
+        );
         assert!(entry.has_tool_calls());
     }
 
@@ -1069,7 +1074,7 @@ mod conversation_tests {
 
             // Load the conversation messages
             let messages = load_conversation_messages("conv-test").expect("load");
-            
+
             // Should have: system, user, assistant, user, assistant
             assert_eq!(messages.len(), 5);
             assert!(matches!(messages[0].role, MessageRole::System));

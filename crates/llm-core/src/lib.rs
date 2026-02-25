@@ -18,9 +18,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod aliases;
-pub mod migrations;
 mod attachments;
 mod logs;
+pub mod migrations;
 mod model_options;
 pub mod providers;
 mod templates;
@@ -414,6 +414,7 @@ pub fn core_version() -> &'static str {
 }
 
 /// Configuration options for prompt execution.
+#[derive(Default)]
 pub struct PromptConfig<'a> {
     /// Override database path for logging.
     pub database_path: Option<&'a str>,
@@ -437,24 +438,6 @@ pub struct PromptConfig<'a> {
     pub conversation_name: Option<&'a str>,
     /// Optional conversation model metadata for the conversation row.
     pub conversation_model: Option<&'a str>,
-}
-
-impl Default for PromptConfig<'_> {
-    fn default() -> Self {
-        PromptConfig {
-            database_path: None,
-            model: None,
-            temperature: None,
-            max_tokens: None,
-            retries: None,
-            retry_backoff_ms: None,
-            api_key: None,
-            log_override: None,
-            conversation_id: None,
-            conversation_name: None,
-            conversation_model: None,
-        }
-    }
 }
 
 /// Debug metadata describing how a prompt will execute.
@@ -620,11 +603,11 @@ fn build_prompt_request_from_messages(
         attachments,
         temperature: None,
         max_tokens: None,
-            tools: None,
-            functions: None,
-            tool_choice: None,
-            response_format: None,
-            schema: None,
+        tools: None,
+        functions: None,
+        tool_choice: None,
+        response_format: None,
+        schema: None,
     };
     apply_prompt_overrides(&mut request, config);
     Ok(request)
@@ -765,8 +748,8 @@ fn execute_request(
     let start = Instant::now();
 
     if provider.supports_streaming() {
-        if let Some(sink) = external_sink.as_deref_mut() {
-            let mut tee = TeeStreamSink::new(&mut accumulator, sink);
+        if let Some(ref mut sink) = external_sink {
+            let mut tee = TeeStreamSink::new(&mut accumulator, *sink);
             provider.stream(request, &mut tee)?;
         } else {
             provider.stream(request, &mut accumulator)?;
@@ -775,9 +758,9 @@ fn execute_request(
         let completion = provider.complete(request)?;
         accumulator.handle_text_delta(&completion.text)?;
         accumulator.handle_done()?;
-        if let Some(sink) = external_sink.as_deref_mut() {
-            sink.handle_text_delta(&completion.text)?;
-            sink.handle_done()?;
+        if let Some(ref mut sink) = external_sink {
+            (*sink).handle_text_delta(&completion.text)?;
+            (*sink).handle_done()?;
         }
     }
 
@@ -1029,7 +1012,7 @@ pub fn available_models() -> Result<Vec<ModelInfo>> {
     });
     // Load stored model options to check which models have options configured
     let stored_options = model_options::load_model_options().unwrap_or_default();
-    
+
     let mut models: Vec<ModelInfo> = BUILTIN_MODELS
         .iter()
         .map(|model| ModelInfo {
@@ -1076,36 +1059,37 @@ pub fn available_models() -> Result<Vec<ModelInfo>> {
 /// Query models by search terms, returning matches sorted by name length (shortest first).
 ///
 /// This implements upstream `--query` behavior: when the user provides query terms
-/// instead of a specific model name, we find all models whose name, description, 
-/// or aliases contain any of the query terms (case-insensitive), then return 
+/// instead of a specific model name, we find all models whose name, description,
+/// or aliases contain any of the query terms (case-insensitive), then return
 /// them sorted by name length so the shortest/simplest match is first.
 pub fn query_models(query: &str) -> Result<Vec<ModelInfo>> {
     let models = available_models()?;
     let query_lower = query.to_ascii_lowercase();
     let terms: Vec<&str> = query_lower.split_whitespace().collect();
-    
+
     if terms.is_empty() {
         return Ok(models);
     }
-    
+
     let mut matches: Vec<ModelInfo> = models
         .into_iter()
         .filter(|model| {
             let name_lower = model.name.to_ascii_lowercase();
             let desc_lower = model.description.to_ascii_lowercase();
-            let aliases_lower: Vec<String> = model.aliases
+            let aliases_lower: Vec<String> = model
+                .aliases
                 .iter()
                 .map(|a| a.to_ascii_lowercase())
                 .collect();
-            
+
             terms.iter().any(|term| {
-                name_lower.contains(term) 
+                name_lower.contains(term)
                     || desc_lower.contains(term)
                     || aliases_lower.iter().any(|a| a.contains(term))
             })
         })
         .collect();
-    
+
     // Sort by name length (shortest first) for upstream parity
     matches.sort_by_key(|m| m.name.len());
     Ok(matches)
@@ -1128,7 +1112,7 @@ pub fn set_default_model(name: &str) -> Result<()> {
 pub fn get_default_model() -> Result<Option<String>> {
     let path = default_model_path()?;
     let legacy_path = legacy_default_model_path()?;
-    
+
     // Try new path first, then fallback to legacy
     let read_path = if path.exists() {
         Some(path)
@@ -1137,11 +1121,11 @@ pub fn get_default_model() -> Result<Option<String>> {
     } else {
         None
     };
-    
+
     let Some(file_path) = read_path else {
         return Ok(None);
     };
-    
+
     let contents = fs::read_to_string(&file_path).context("failed to read default model")?;
     let trimmed = contents.trim();
     if trimmed.is_empty() {
@@ -1713,4 +1697,3 @@ mod tests {
         });
     }
 }
-

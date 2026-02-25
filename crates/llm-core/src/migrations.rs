@@ -452,13 +452,15 @@ pub fn migration_preflight<P: AsRef<Path>>(db_path: P) -> Result<PreflightReport
     if has_schema_changes && !pending.is_empty() {
         warnings.push(format!(
             "Schema changes will be applied. Backup will be created at: {}",
-            backup_path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+            backup_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
         ));
     }
 
     // Check for unknown migrations in the database (applied but not in code)
-    let known_names: std::collections::HashSet<&str> =
-        MIGRATIONS.iter().map(|m| m.name).collect();
+    let known_names: std::collections::HashSet<&str> = MIGRATIONS.iter().map(|m| m.name).collect();
     for applied_migration in &applied {
         if !known_names.contains(applied_migration.name.as_str()) {
             warnings.push(format!(
@@ -601,7 +603,10 @@ pub fn run_migrations<P: AsRef<Path>>(db_path: P) -> Result<MigrationSummary> {
 
     // Apply pending migrations in order
     for migration in MIGRATIONS {
-        if !preflight.pending_migrations.contains(&migration.name.to_string()) {
+        if !preflight
+            .pending_migrations
+            .contains(&migration.name.to_string())
+        {
             summary.skipped_count += 1;
             continue;
         }
@@ -646,7 +651,10 @@ pub fn backup_before_migration<P: AsRef<Path>>(db_path: P) -> Result<PathBuf> {
     let path = db_path.as_ref();
 
     if !path.exists() {
-        anyhow::bail!("Cannot backup: database does not exist at {}", path.display());
+        anyhow::bail!(
+            "Cannot backup: database does not exist at {}",
+            path.display()
+        );
     }
 
     let backup_path = generate_backup_path(path)?;
@@ -696,7 +704,7 @@ fn generate_deterministic_ulid(datetime_utc: Option<&str>, sequence: u64) -> Str
     // ULID structure: 48-bit timestamp (ms) + 80-bit randomness
     // For deterministic conversion, we use the sequence number in the lower bits
     // to maintain ordering within the same millisecond.
-    
+
     // Create ULID from timestamp and a deterministic "random" component
     // The random component is derived from the sequence to ensure uniqueness
     // and preserve ordering within the same timestamp.
@@ -704,14 +712,29 @@ fn generate_deterministic_ulid(datetime_utc: Option<&str>, sequence: u64) -> Str
     let mut random_bytes = [0u8; 10];
     // Put sequence in the last 8 bytes, leaving first 2 as zero
     random_bytes[2..10].copy_from_slice(&random_part);
-    
-    let ulid = Ulid::from_parts(timestamp_ms, u128::from_be_bytes([
-        0, 0, 0, 0, 0, 0,
-        random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3],
-        random_bytes[4], random_bytes[5], random_bytes[6], random_bytes[7],
-        random_bytes[8], random_bytes[9],
-    ]));
-    
+
+    let ulid = Ulid::from_parts(
+        timestamp_ms,
+        u128::from_be_bytes([
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            random_bytes[0],
+            random_bytes[1],
+            random_bytes[2],
+            random_bytes[3],
+            random_bytes[4],
+            random_bytes[5],
+            random_bytes[6],
+            random_bytes[7],
+            random_bytes[8],
+            random_bytes[9],
+        ]),
+    );
+
     ulid.to_string()
 }
 
@@ -729,15 +752,18 @@ fn apply_ulid_migration(conn: &Connection, migration: &Migration) -> Result<bool
 
     let result = (|| -> Result<()> {
         // Step 1: Drop FTS triggers (they reference integer rowid)
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             DROP TRIGGER IF EXISTS responses_ai;
             DROP TRIGGER IF EXISTS responses_ad;
             DROP TRIGGER IF EXISTS responses_au;
             DROP TABLE IF EXISTS responses_fts;
-        "#)?;
+        "#,
+        )?;
 
         // Step 2: Create new responses table with TEXT id
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE responses_new (
                 id TEXT PRIMARY KEY,
                 model TEXT NOT NULL,
@@ -761,13 +787,14 @@ fn apply_ulid_migration(conn: &Connection, migration: &Migration) -> Result<bool
                 usage_json TEXT,
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id)
             );
-        "#)?;
+        "#,
+        )?;
 
         // Step 3: Read existing responses ordered by datetime_utc, id and generate ULIDs
         let mut id_mapping: Vec<(i64, String)> = Vec::new();
         {
             let mut stmt = conn.prepare(
-                "SELECT id, datetime_utc FROM responses ORDER BY datetime_utc ASC, id ASC"
+                "SELECT id, datetime_utc FROM responses ORDER BY datetime_utc ASC, id ASC",
             )?;
             let mut rows = stmt.query([])?;
             let mut sequence: u64 = 0;
@@ -812,7 +839,8 @@ fn apply_ulid_migration(conn: &Connection, migration: &Migration) -> Result<bool
         }
 
         // Update prompt_attachments
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE prompt_attachments_new (
                 response_id TEXT NOT NULL,
                 attachment_id TEXT NOT NULL,
@@ -827,10 +855,12 @@ fn apply_ulid_migration(conn: &Connection, migration: &Migration) -> Result<bool
                 JOIN id_map m ON pa.response_id = m.old_id;
             DROP TABLE prompt_attachments;
             ALTER TABLE prompt_attachments_new RENAME TO prompt_attachments;
-        "#)?;
+        "#,
+        )?;
 
         // Update prompt_fragments
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE prompt_fragments_new (
                 response_id TEXT NOT NULL,
                 fragment_id INTEGER NOT NULL,
@@ -845,10 +875,12 @@ fn apply_ulid_migration(conn: &Connection, migration: &Migration) -> Result<bool
                 JOIN id_map m ON pf.response_id = m.old_id;
             DROP TABLE prompt_fragments;
             ALTER TABLE prompt_fragments_new RENAME TO prompt_fragments;
-        "#)?;
+        "#,
+        )?;
 
         // Update system_fragments
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE system_fragments_new (
                 response_id TEXT NOT NULL,
                 fragment_id INTEGER NOT NULL,
@@ -863,10 +895,12 @@ fn apply_ulid_migration(conn: &Connection, migration: &Migration) -> Result<bool
                 JOIN id_map m ON sf.response_id = m.old_id;
             DROP TABLE system_fragments;
             ALTER TABLE system_fragments_new RENAME TO system_fragments;
-        "#)?;
+        "#,
+        )?;
 
         // Update tool_responses
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE tool_responses_new (
                 tool_id INTEGER NOT NULL,
                 response_id TEXT NOT NULL,
@@ -880,10 +914,12 @@ fn apply_ulid_migration(conn: &Connection, migration: &Migration) -> Result<bool
                 JOIN id_map m ON tr.response_id = m.old_id;
             DROP TABLE tool_responses;
             ALTER TABLE tool_responses_new RENAME TO tool_responses;
-        "#)?;
+        "#,
+        )?;
 
         // Update tool_calls
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             CREATE TABLE tool_calls_new (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 response_id TEXT NOT NULL,
@@ -901,7 +937,8 @@ fn apply_ulid_migration(conn: &Connection, migration: &Migration) -> Result<bool
             DROP TABLE tool_calls;
             ALTER TABLE tool_calls_new RENAME TO tool_calls;
             CREATE INDEX IF NOT EXISTS idx_tool_calls_response ON tool_calls(response_id);
-        "#)?;
+        "#,
+        )?;
 
         // Update tool_results
         conn.execute_batch(r#"
@@ -931,19 +968,22 @@ fn apply_ulid_migration(conn: &Connection, migration: &Migration) -> Result<bool
         conn.execute_batch("DROP TABLE id_map;")?;
 
         // Step 6: Drop old responses table and rename new one
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             DROP TABLE responses;
             ALTER TABLE responses_new RENAME TO responses;
             CREATE INDEX IF NOT EXISTS idx_responses_datetime ON responses(datetime_utc);
             CREATE INDEX IF NOT EXISTS idx_responses_conversation_id ON responses(conversation_id);
             CREATE INDEX IF NOT EXISTS idx_responses_model ON responses(model);
-        "#)?;
+        "#,
+        )?;
 
         // Step 7: Recreate FTS virtual table for TEXT ids
         // Note: FTS5 with content= tables requires a rowid column, but we now have TEXT ids.
         // We use an external content table without content_rowid since our id is TEXT.
         // This means we need to manually sync FTS content.
-        conn.execute_batch(r#"
+        conn.execute_batch(
+            r#"
             -- Create FTS5 table with explicit id column for TEXT-based lookups
             CREATE VIRTUAL TABLE IF NOT EXISTS responses_fts USING fts5(
                 id,
@@ -972,7 +1012,8 @@ fn apply_ulid_migration(conn: &Connection, migration: &Migration) -> Result<bool
                 INSERT INTO responses_fts(id, prompt, response)
                     VALUES (new.id, new.prompt, new.response);
             END;
-        "#)?;
+        "#,
+        )?;
 
         Ok(())
     })();
@@ -1262,11 +1303,11 @@ mod tests {
 
     #[test]
     fn test_backup_path_format() {
-        let path = PathBuf::from("/tmp/logs.db");
+        let path = std::env::temp_dir().join("logs.db");
         let backup = generate_backup_path(&path).expect("generate");
 
         assert!(backup.to_string_lossy().contains("logs.db.backup."));
-        assert!(backup.to_string_lossy().contains("/tmp/"));
+        assert_eq!(backup.parent(), path.parent());
     }
 
     #[test]
@@ -1286,7 +1327,10 @@ mod tests {
 
         // Preflight should warn about it
         let report = migration_preflight(&path).expect("preflight");
-        assert!(report.warnings.iter().any(|w| w.contains("Unknown migration 'unknown_migration'")));
+        assert!(report
+            .warnings
+            .iter()
+            .any(|w| w.contains("Unknown migration 'unknown_migration'")));
     }
 
     #[test]
@@ -1481,7 +1525,10 @@ mod tests {
             )
             .expect("get id type");
 
-        assert_eq!(id_type, "TEXT", "responses.id should be TEXT after migration");
+        assert_eq!(
+            id_type, "TEXT",
+            "responses.id should be TEXT after migration"
+        );
     }
 
     #[test]
@@ -1493,12 +1540,18 @@ mod tests {
 
         // Different sequences should produce different ULIDs
         let ulid3 = generate_deterministic_ulid(Some("2024-01-15T10:30:00Z"), 1);
-        assert_ne!(ulid1, ulid3, "Different sequences should produce different ULIDs");
+        assert_ne!(
+            ulid1, ulid3,
+            "Different sequences should produce different ULIDs"
+        );
 
         // Earlier timestamp should sort before later timestamp
         let ulid_early = generate_deterministic_ulid(Some("2024-01-15T10:30:00Z"), 0);
         let ulid_late = generate_deterministic_ulid(Some("2024-01-15T10:31:00Z"), 0);
-        assert!(ulid_early < ulid_late, "Earlier timestamp ULID should sort before later");
+        assert!(
+            ulid_early < ulid_late,
+            "Earlier timestamp ULID should sort before later"
+        );
     }
 
     #[test]
@@ -1516,19 +1569,22 @@ mod tests {
         conn.execute(
             "INSERT INTO conversations (id, name, model) VALUES ('conv1', 'Test Conv', 'gpt-4')",
             [],
-        ).expect("insert conv");
+        )
+        .expect("insert conv");
 
         conn.execute(
             "INSERT INTO responses (model, prompt, response, conversation_id, datetime_utc) \
              VALUES ('gpt-4', 'Hello', 'World', 'conv1', '2024-01-15T10:30:00Z')",
             [],
-        ).expect("insert response 1");
+        )
+        .expect("insert response 1");
 
         conn.execute(
             "INSERT INTO responses (model, prompt, response, conversation_id, datetime_utc) \
              VALUES ('gpt-4', 'Goodbye', 'Farewell', 'conv1', '2024-01-15T10:31:00Z')",
             [],
-        ).expect("insert response 2");
+        )
+        .expect("insert response 2");
 
         drop(conn);
 
@@ -1551,7 +1607,7 @@ mod tests {
             .expect("query")
             .filter_map(|r| r.ok())
             .collect();
-        
+
         assert_eq!(ids.len(), 2);
         // IDs should be valid ULIDs (26 characters, uppercase base32)
         for id in &ids {
@@ -1565,10 +1621,10 @@ mod tests {
     fn test_generate_response_ulid() {
         let ulid1 = generate_response_ulid();
         let ulid2 = generate_response_ulid();
-        
+
         // Each call should produce a different ULID
         assert_ne!(ulid1, ulid2);
-        
+
         // ULIDs should be 26 characters
         assert_eq!(ulid1.len(), 26);
         assert_eq!(ulid2.len(), 26);

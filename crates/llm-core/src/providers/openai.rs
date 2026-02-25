@@ -187,11 +187,7 @@ impl PromptProvider for OpenAIProvider {
                 calls
                     .iter()
                     .map(|tc| {
-                        ToolCall::function_call(
-                            &tc.id,
-                            &tc.function.name,
-                            &tc.function.arguments,
-                        )
+                        ToolCall::function_call(&tc.id, &tc.function.name, &tc.function.arguments)
                     })
                     .collect()
             })
@@ -206,16 +202,17 @@ impl PromptProvider for OpenAIProvider {
         });
 
         // Extract finish reason
-        let finish_reason = choice.and_then(|c| c.finish_reason.as_ref()).map(|r| {
-            match r.as_str() {
-                "stop" => FinishReason::Stop,
-                "length" => FinishReason::Length,
-                "tool_calls" => FinishReason::ToolCalls,
-                "function_call" => FinishReason::FunctionCall,
-                "content_filter" => FinishReason::ContentFilter,
-                _ => FinishReason::Other,
-            }
-        });
+        let finish_reason =
+            choice
+                .and_then(|c| c.finish_reason.as_ref())
+                .map(|r| match r.as_str() {
+                    "stop" => FinishReason::Stop,
+                    "length" => FinishReason::Length,
+                    "tool_calls" => FinishReason::ToolCalls,
+                    "function_call" => FinishReason::FunctionCall,
+                    "content_filter" => FinishReason::ContentFilter,
+                    _ => FinishReason::Other,
+                });
 
         // Extract usage
         let usage = response.usage.map(|u| UsageInfo {
@@ -301,13 +298,14 @@ impl PromptProvider for OpenAIProvider {
                     if let Some(tool_calls) = delta.tool_calls {
                         for tc_delta in tool_calls {
                             let index = tc_delta.index;
-                            let buffer = tool_call_buffers.entry(index).or_insert_with(|| {
-                                ToolCallBuffer {
-                                    id: String::new(),
-                                    name: String::new(),
-                                    arguments: String::new(),
-                                }
-                            });
+                            let buffer =
+                                tool_call_buffers
+                                    .entry(index)
+                                    .or_insert_with(|| ToolCallBuffer {
+                                        id: String::new(),
+                                        name: String::new(),
+                                        arguments: String::new(),
+                                    });
 
                             // Update buffer with delta values
                             if let Some(id) = tc_delta.id {
@@ -327,13 +325,13 @@ impl PromptProvider for OpenAIProvider {
                     // Handle deprecated function_call
                     if let Some(fc) = delta.function_call {
                         // For function_call, we use index 0 in the buffer with a special ID
-                        let buffer = tool_call_buffers.entry(0).or_insert_with(|| {
-                            ToolCallBuffer {
+                        let buffer = tool_call_buffers
+                            .entry(0)
+                            .or_insert_with(|| ToolCallBuffer {
                                 id: "function_call".to_string(),
                                 name: String::new(),
                                 arguments: String::new(),
-                            }
-                        });
+                            });
                         if let Some(name) = fc.name {
                             buffer.name = name;
                         }
@@ -381,7 +379,8 @@ fn emit_accumulated_tool_calls(
     for index in indices {
         if let Some(buffer) = buffers.remove(&index) {
             if !buffer.id.is_empty() && !buffer.name.is_empty() {
-                let tool_call = ToolCall::function_call(&buffer.id, &buffer.name, &buffer.arguments);
+                let tool_call =
+                    ToolCall::function_call(&buffer.id, &buffer.name, &buffer.arguments);
                 sink.handle_tool_call(&tool_call)?;
             }
         }
@@ -642,18 +641,15 @@ impl OpenAIRequest {
         }
 
         // Convert tools
-        let tools = request.tools.map(|tools| {
-            tools
-                .into_iter()
-                .map(|t| openai_tool_from_definition(t))
-                .collect()
-        });
+        let tools = request
+            .tools
+            .map(|tools| tools.into_iter().map(openai_tool_from_definition).collect());
 
         // Convert tool_choice
-        let tool_choice = request.tool_choice.map(|tc| tool_choice_to_value(tc));
+        let tool_choice = request.tool_choice.map(tool_choice_to_value);
 
         // Convert response_format
-        let response_format = request.response_format.map(|rf| openai_response_format(rf));
+        let response_format = request.response_format.map(openai_response_format);
 
         Ok(OpenAIRequest {
             model: canonical_model_name(&request.model),
@@ -670,9 +666,10 @@ impl OpenAIRequest {
 
 /// Convert a ToolDefinition to OpenAI's tool format.
 fn openai_tool_from_definition(tool: ToolDefinition) -> OpenAITool {
-    let parameters = tool.function.parameters.map(|schema| {
-        serde_json::to_value(&schema).unwrap_or(Value::Null)
-    });
+    let parameters = tool
+        .function
+        .parameters
+        .map(|schema| serde_json::to_value(&schema).unwrap_or(Value::Null));
 
     OpenAITool {
         tool_type: tool.tool_type,
@@ -701,7 +698,11 @@ fn openai_response_format(format: ResponseFormat) -> OpenAIResponseFormat {
             format_type: "json_object".to_string(),
             json_schema: None,
         },
-        ResponseFormat::JsonSchema { name, schema, strict } => OpenAIResponseFormat {
+        ResponseFormat::JsonSchema {
+            name,
+            schema,
+            strict,
+        } => OpenAIResponseFormat {
             format_type: "json_schema".to_string(),
             json_schema: Some(OpenAIJsonSchema {
                 name,
@@ -1041,11 +1042,14 @@ mod tests {
     #[test]
     fn streaming_emits_tool_calls_to_sink() {
         let mut buffers: HashMap<u32, ToolCallBuffer> = HashMap::new();
-        buffers.insert(0, ToolCallBuffer {
-            id: "call_123".to_string(),
-            name: "search".to_string(),
-            arguments: r#"{"query": "test"}"#.to_string(),
-        });
+        buffers.insert(
+            0,
+            ToolCallBuffer {
+                id: "call_123".to_string(),
+                name: "search".to_string(),
+                arguments: r#"{"query": "test"}"#.to_string(),
+            },
+        );
 
         let mut sink = VecStreamSink::new();
         emit_accumulated_tool_calls(&mut buffers, &mut sink).expect("emit");

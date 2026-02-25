@@ -180,20 +180,20 @@ mod tests {
         };
 
         let cli = ModelOptions {
-            temperature: Some(0.5), // Override stored
-            max_tokens: None,       // Keep stored
-            top_p: None,            // Keep stored
+            temperature: Some(0.5),       // Override stored
+            max_tokens: None,             // Keep stored
+            top_p: None,                  // Keep stored
             frequency_penalty: Some(0.1), // New value
             presence_penalty: None,
-            stop: None,             // Keep stored
-            system: None,           // Keep stored
+            stop: None,   // Keep stored
+            system: None, // Keep stored
         };
 
         let merged = stored.merge_with(&cli);
 
         assert_eq!(merged.temperature, Some(0.5)); // CLI wins
         assert_eq!(merged.max_tokens, Some(1000)); // Stored preserved
-        assert_eq!(merged.top_p, Some(0.9));       // Stored preserved
+        assert_eq!(merged.top_p, Some(0.9)); // Stored preserved
         assert_eq!(merged.frequency_penalty, Some(0.1)); // CLI adds
         assert_eq!(merged.presence_penalty, None);
         assert_eq!(merged.stop, Some(vec!["END".to_string()])); // Stored preserved
@@ -206,7 +206,8 @@ mod tests {
         assert!(!ModelOptions {
             temperature: Some(0.5),
             ..Default::default()
-        }.is_empty());
+        }
+        .is_empty());
     }
 
     #[test]
@@ -233,7 +234,9 @@ mod tests {
             };
             set_model_options("openai/gpt-4o", &opts).expect("set options");
 
-            let loaded = get_model_options("openai/gpt-4o").expect("get options").unwrap();
+            let loaded = get_model_options("openai/gpt-4o")
+                .expect("get options")
+                .unwrap();
             assert_eq!(loaded.temperature, Some(0.8));
             assert_eq!(loaded.max_tokens, Some(2000));
 
@@ -282,18 +285,30 @@ mod tests {
             let tmp = temp_user_dir();
             env::set_var("LLM_USER_PATH", tmp.path());
 
-            set_model_options("zebra-model", &ModelOptions {
-                temperature: Some(0.1),
-                ..Default::default()
-            }).expect("set options");
-            set_model_options("alpha-model", &ModelOptions {
-                temperature: Some(0.2),
-                ..Default::default()
-            }).expect("set options");
-            set_model_options("beta-model", &ModelOptions {
-                temperature: Some(0.3),
-                ..Default::default()
-            }).expect("set options");
+            set_model_options(
+                "zebra-model",
+                &ModelOptions {
+                    temperature: Some(0.1),
+                    ..Default::default()
+                },
+            )
+            .expect("set options");
+            set_model_options(
+                "alpha-model",
+                &ModelOptions {
+                    temperature: Some(0.2),
+                    ..Default::default()
+                },
+            )
+            .expect("set options");
+            set_model_options(
+                "beta-model",
+                &ModelOptions {
+                    temperature: Some(0.3),
+                    ..Default::default()
+                },
+            )
+            .expect("set options");
 
             let list = list_model_options().expect("list options");
             let names: Vec<&str> = list.iter().map(|(n, _)| n.as_str()).collect();

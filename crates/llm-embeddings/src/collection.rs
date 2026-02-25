@@ -142,11 +142,7 @@ impl Collection {
     ///
     /// If the collection exists, `model_id` is optional and will be read from the database.
     /// If creating a new collection, `model_id` is required.
-    pub fn open<P: AsRef<Path>>(
-        db_path: P,
-        name: &str,
-        model_id: Option<&str>,
-    ) -> Result<Self> {
+    pub fn open<P: AsRef<Path>>(db_path: P, name: &str, model_id: Option<&str>) -> Result<Self> {
         let conn = open_embeddings_db(db_path.as_ref())?;
         Self::open_with_conn(Arc::new(Mutex::new(conn)), name, model_id)
     }
@@ -196,9 +192,10 @@ impl Collection {
             }
             None => {
                 // Create new collection
-                let model_id = model_id
-                    .ok_or_else(|| anyhow!("model_id is required when creating a new collection"))?;
-                
+                let model_id = model_id.ok_or_else(|| {
+                    anyhow!("model_id is required when creating a new collection")
+                })?;
+
                 let id = {
                     let c = conn.lock().unwrap();
                     c.execute(
@@ -221,8 +218,7 @@ impl Collection {
 
     /// Create an in-memory collection for testing.
     pub fn in_memory(name: &str, model_id: &str) -> Result<Self> {
-        let conn = Connection::open_in_memory()
-            .context("failed to create in-memory database")?;
+        let conn = Connection::open_in_memory().context("failed to create in-memory database")?;
         Self::open_with_conn(Arc::new(Mutex::new(conn)), name, Some(model_id))
     }
 
@@ -282,7 +278,7 @@ impl Collection {
     ) -> Result<()> {
         // Check content hash to avoid re-embedding
         let hash = content_hash(content.as_bytes());
-        
+
         if self.has_content_hash(&hash)? {
             // Content already embedded, just update the ID mapping if needed
             return self.upsert_entry(id, None, content, metadata, store_content, &hash);
@@ -290,7 +286,14 @@ impl Collection {
 
         // Generate embedding
         let result = provider.embed(content)?;
-        self.upsert_entry(id, Some(&result.embedding), content, metadata, store_content, &hash)
+        self.upsert_entry(
+            id,
+            Some(&result.embedding),
+            content,
+            metadata,
+            store_content,
+            &hash,
+        )
     }
 
     /// Store a pre-computed embedding.
@@ -301,9 +304,11 @@ impl Collection {
         content: Option<&str>,
         metadata: Option<serde_json::Value>,
     ) -> Result<()> {
-        let hash = content.map(|c| content_hash(c.as_bytes())).unwrap_or_default();
+        let hash = content
+            .map(|c| content_hash(c.as_bytes()))
+            .unwrap_or_default();
         let c = self.conn.lock().unwrap();
-        
+
         let embedding_blob = encode_embedding(embedding);
         let metadata_json = metadata.map(|m| m.to_string());
         let now = chrono::Utc::now().timestamp();
@@ -360,9 +365,12 @@ impl Collection {
 
         // Batch embed new content
         if !to_embed.is_empty() {
-            let texts: Vec<&str> = to_embed.iter().map(|(item, _)| item.content.as_str()).collect();
+            let texts: Vec<&str> = to_embed
+                .iter()
+                .map(|(item, _)| item.content.as_str())
+                .collect();
             let batch_size = provider.batch_size();
-            
+
             for chunk_start in (0..texts.len()).step_by(batch_size) {
                 let chunk_end = (chunk_start + batch_size).min(texts.len());
                 let chunk_texts = &texts[chunk_start..chunk_end];
@@ -446,8 +454,7 @@ impl Collection {
             let stored_embedding = decode_embedding(&emb_blob);
             let score = cosine_similarity(embedding, &stored_embedding);
 
-            let metadata = metadata_json
-                .and_then(|s| serde_json::from_str(&s).ok());
+            let metadata = metadata_json.and_then(|s| serde_json::from_str(&s).ok());
 
             scored.push(Entry {
                 id,
@@ -471,7 +478,8 @@ impl Collection {
 
     /// Find similar embeddings to an existing entry by ID.
     pub fn similar_by_id(&self, id: &str, n: usize) -> Result<Vec<Entry>> {
-        let embedding = self.get_embedding(id)?
+        let embedding = self
+            .get_embedding(id)?
             .ok_or_else(|| anyhow!("Entry '{}' not found in collection", id))?;
         self.similar_by_vector(&embedding, n, Some(id))
     }
@@ -520,10 +528,7 @@ impl Collection {
             "DELETE FROM embeddings WHERE collection_id = ?1",
             params![self.id],
         )?;
-        c.execute(
-            "DELETE FROM collections WHERE id = ?1",
-            params![self.id],
-        )?;
+        c.execute("DELETE FROM collections WHERE id = ?1", params![self.id])?;
         Ok(())
     }
 
@@ -551,7 +556,7 @@ impl Collection {
         hash: &[u8],
     ) -> Result<()> {
         let c = self.conn.lock().unwrap();
-        
+
         let stored_content = if store_content { Some(content) } else { None };
         let metadata_json = metadata.map(|m| m.to_string());
         let now = chrono::Utc::now().timestamp();
@@ -651,7 +656,8 @@ pub fn list_collections<P: AsRef<Path>>(db_path: P) -> Result<Vec<(String, Strin
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
 
-    rows.collect::<Result<Vec<_>, _>>().context("failed to list collections")
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("failed to list collections")
 }
 
 /// Delete a collection by name.
@@ -678,7 +684,10 @@ pub fn delete_collection<P: AsRef<Path>>(db_path: P, name: &str) -> Result<bool>
     };
 
     // Delete embeddings and collection
-    conn.execute("DELETE FROM embeddings WHERE collection_id = ?1", params![id])?;
+    conn.execute(
+        "DELETE FROM embeddings WHERE collection_id = ?1",
+        params![id],
+    )?;
     conn.execute("DELETE FROM collections WHERE id = ?1", params![id])?;
 
     Ok(true)
@@ -743,7 +752,7 @@ mod tests {
         let hash1 = content_hash(b"hello world");
         let hash2 = content_hash(b"hello world");
         let hash3 = content_hash(b"different");
-        
+
         assert_eq!(hash1, hash2);
         assert_ne!(hash1, hash3);
         assert_eq!(hash1.len(), 32); // SHA256 = 32 bytes
@@ -751,9 +760,9 @@ mod tests {
 
     #[test]
     fn test_collection_in_memory() {
-        let collection = Collection::in_memory("test", "text-embedding-3-small")
-            .expect("create collection");
-        
+        let collection =
+            Collection::in_memory("test", "text-embedding-3-small").expect("create collection");
+
         assert_eq!(collection.name(), "test");
         assert_eq!(collection.model_id(), "text-embedding-3-small");
         assert_eq!(collection.count().unwrap(), 0);
@@ -761,8 +770,7 @@ mod tests {
 
     #[test]
     fn test_collection_store_and_retrieve() {
-        let collection = Collection::in_memory("test", "model")
-            .expect("create collection");
+        let collection = Collection::in_memory("test", "model").expect("create collection");
 
         let embedding = vec![0.1, 0.2, 0.3];
         collection
@@ -780,14 +788,21 @@ mod tests {
 
     #[test]
     fn test_collection_similar_by_vector() {
-        let collection = Collection::in_memory("test", "model")
-            .expect("create collection");
+        let collection = Collection::in_memory("test", "model").expect("create collection");
 
         // Store some embeddings
-        collection.store("a", &[1.0, 0.0, 0.0], Some("north"), None).unwrap();
-        collection.store("b", &[0.9, 0.1, 0.0], Some("north-ish"), None).unwrap();
-        collection.store("c", &[0.0, 1.0, 0.0], Some("east"), None).unwrap();
-        collection.store("d", &[-1.0, 0.0, 0.0], Some("south"), None).unwrap();
+        collection
+            .store("a", &[1.0, 0.0, 0.0], Some("north"), None)
+            .unwrap();
+        collection
+            .store("b", &[0.9, 0.1, 0.0], Some("north-ish"), None)
+            .unwrap();
+        collection
+            .store("c", &[0.0, 1.0, 0.0], Some("east"), None)
+            .unwrap();
+        collection
+            .store("d", &[-1.0, 0.0, 0.0], Some("south"), None)
+            .unwrap();
 
         // Find similar to north
         let query = vec![1.0, 0.0, 0.0];
@@ -801,15 +816,14 @@ mod tests {
 
     #[test]
     fn test_collection_similar_by_id() {
-        let collection = Collection::in_memory("test", "model")
-            .expect("create collection");
+        let collection = Collection::in_memory("test", "model").expect("create collection");
 
         collection.store("a", &[1.0, 0.0], None, None).unwrap();
         collection.store("b", &[0.9, 0.1], None, None).unwrap();
         collection.store("c", &[0.0, 1.0], None, None).unwrap();
 
         let results = collection.similar_by_id("a", 2).unwrap();
-        
+
         assert_eq!(results.len(), 2);
         // Should not include "a" itself
         assert!(results.iter().all(|e| e.id != "a"));
@@ -818,8 +832,7 @@ mod tests {
 
     #[test]
     fn test_collection_with_metadata() {
-        let collection = Collection::in_memory("test", "model")
-            .expect("create collection");
+        let collection = Collection::in_memory("test", "model").expect("create collection");
 
         let metadata = serde_json::json!({"name": "Test", "count": 42});
         collection
@@ -833,11 +846,14 @@ mod tests {
 
     #[test]
     fn test_collection_upsert() {
-        let collection = Collection::in_memory("test", "model")
-            .expect("create collection");
+        let collection = Collection::in_memory("test", "model").expect("create collection");
 
-        collection.store("item", &[1.0, 2.0], Some("v1"), None).unwrap();
-        collection.store("item", &[3.0, 4.0], Some("v2"), None).unwrap();
+        collection
+            .store("item", &[1.0, 2.0], Some("v1"), None)
+            .unwrap();
+        collection
+            .store("item", &[3.0, 4.0], Some("v2"), None)
+            .unwrap();
 
         assert_eq!(collection.count().unwrap(), 1);
 
@@ -850,8 +866,7 @@ mod tests {
 
     #[test]
     fn test_collection_delete() {
-        let collection = Collection::in_memory("test", "model")
-            .expect("create collection");
+        let collection = Collection::in_memory("test", "model").expect("create collection");
 
         collection.store("a", &[1.0], None, None).unwrap();
         collection.store("b", &[2.0], None, None).unwrap();
@@ -865,7 +880,7 @@ mod tests {
     fn test_embed_item() {
         let item = EmbedItem::new("id1", "hello world")
             .with_metadata(serde_json::json!({"tag": "greeting"}));
-        
+
         assert_eq!(item.id, "id1");
         assert_eq!(item.content, "hello world");
         assert!(item.metadata.is_some());

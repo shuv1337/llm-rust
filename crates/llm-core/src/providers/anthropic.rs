@@ -400,8 +400,7 @@ fn handle_stream_event(
                     }
                     _ => {
                         // Legacy fallback for text field at top level
-                        let chunk: Result<StreamContentBlockDelta, _> =
-                            serde_json::from_str(data);
+                        let chunk: Result<StreamContentBlockDelta, _> = serde_json::from_str(data);
                         if let Ok(chunk) = chunk {
                             if let Some(text) = chunk.delta.text {
                                 if !text.is_empty() {
@@ -1039,7 +1038,10 @@ mod tests {
         let response: AnthropicResponse =
             serde_json::from_str(response_json).expect("parse response");
 
-        assert_eq!(response.primary_text(), Some("I'll check the weather for you."));
+        assert_eq!(
+            response.primary_text(),
+            Some("I'll check the weather for you.")
+        );
 
         let tool_calls = response.extract_tool_calls();
         assert_eq!(tool_calls.len(), 1);
@@ -1171,7 +1173,10 @@ mod tests {
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].id, "toolu_123");
         assert_eq!(tool_calls[0].function.name, "get_weather");
-        assert_eq!(tool_calls[0].function.arguments, r#"{"location": "Seattle"}"#);
+        assert_eq!(
+            tool_calls[0].function.arguments,
+            r#"{"location": "Seattle"}"#
+        );
     }
 
     #[test]

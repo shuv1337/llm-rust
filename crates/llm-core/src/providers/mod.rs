@@ -124,10 +124,11 @@ impl ToolDefinition {
 // ==================== Response Format ====================
 
 /// Specifies the format for model responses.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseFormat {
     /// Default text response.
+    #[default]
     Text,
 
     /// JSON object response (model will output valid JSON).
@@ -145,12 +146,6 @@ pub enum ResponseFormat {
         #[serde(skip_serializing_if = "Option::is_none")]
         strict: Option<bool>,
     },
-}
-
-impl Default for ResponseFormat {
-    fn default() -> Self {
-        ResponseFormat::Text
-    }
 }
 
 // ==================== Usage & Completion Metadata ====================
@@ -218,7 +213,11 @@ pub struct ToolCall {
 
 impl ToolCall {
     /// Create a new function tool call.
-    pub fn function_call(id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Self {
+    pub fn function_call(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             tool_type: "function".to_string(),
@@ -354,7 +353,10 @@ impl PromptMessage {
     }
 
     /// Create an assistant message with tool calls.
-    pub fn assistant_with_tool_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+    pub fn assistant_with_tool_calls(
+        content: impl Into<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Self {
         Self {
             role: MessageRole::Assistant,
             content: content.into(),
@@ -564,7 +566,7 @@ impl PromptCompletion {
 
     /// Check if the model wants to call tools.
     pub fn has_tool_calls(&self) -> bool {
-        self.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty())
+        self.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty())
     }
 }
 
@@ -772,11 +774,8 @@ mod tests {
 
     #[test]
     fn tool_call_serialization() {
-        let tool_call = ToolCall::function_call(
-            "call_123",
-            "get_weather",
-            r#"{"location": "Seattle"}"#,
-        );
+        let tool_call =
+            ToolCall::function_call("call_123", "get_weather", r#"{"location": "Seattle"}"#);
 
         let json = serde_json::to_string(&tool_call).expect("serialize");
         assert!(json.contains("\"id\":\"call_123\""));
@@ -872,11 +871,16 @@ mod tests {
     #[test]
     fn prompt_request_builder_methods() {
         let request = PromptRequest::user_only("gpt-4".to_string(), "hello".to_string())
-            .with_tools(vec![ToolDefinition::function(FunctionDefinition::new("test"))])
+            .with_tools(vec![ToolDefinition::function(FunctionDefinition::new(
+                "test",
+            ))])
             .with_response_format(ResponseFormat::JsonObject);
 
         assert!(request.tools.is_some());
         assert_eq!(request.tools.as_ref().unwrap().len(), 1);
-        assert!(matches!(request.response_format, Some(ResponseFormat::JsonObject)));
+        assert!(matches!(
+            request.response_format,
+            Some(ResponseFormat::JsonObject)
+        ));
     }
 }
