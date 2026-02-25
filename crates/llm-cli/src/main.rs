@@ -1,6 +1,12 @@
+mod command_registry;
+
+pub use command_registry::{
+    create_registry, get_core_command_names, CommandHandler, CommandRegistry, PluginCommand,
+};
+
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{error::ErrorKind, Args, CommandFactory, Parser, Subcommand};
 use llm_core::{
     aliases_path, available_models, backup_logs, core_version, detect_mime_from_content,
     detect_mime_from_path, detect_remote_mime, embeddings_db_path, execute_prompt_with_messages,
@@ -895,8 +901,84 @@ fn migrate_legacy_continuation_args(args: Vec<String>) -> Vec<String> {
 }
 
 fn main() -> Result<()> {
-    let args = migrate_legacy_continuation_args(env::args().collect());
-    let cli = Cli::parse_from(args);
+    let raw_args: Vec<String> = env::args().collect();
+    let args = migrate_legacy_continuation_args(raw_args.clone());
+
+    // Initialize the command registry with core commands
+    let registry = create_registry();
+
+    // Try to parse with Clap first
+    match Cli::try_parse_from(&args) {
+        Ok(cli) => {
+            // Clap parsed successfully - dispatch to core commands
+            run_cli(cli)
+        }
+        Err(e) => {
+            // Check if this is an unrecognized subcommand that might be a plugin command
+            if let ErrorKind::InvalidSubcommand = e.kind() {
+                // Extract the subcommand name from args
+                if let Some(cmd_name) = extract_subcommand_name(&args) {
+                    // Try plugin command dispatch
+                    if let Some(result) = registry.dispatch(&cmd_name, &extract_command_args(&args, &cmd_name)) {
+                        return result;
+                    }
+                }
+            }
+            // Not a plugin command or different error - let Clap handle it
+            e.exit();
+        }
+    }
+}
+
+/// Extract the subcommand name from command line arguments.
+///
+/// Skips the program name and any global flags to find the first positional argument
+/// that looks like a subcommand (doesn't start with '-').
+fn extract_subcommand_name(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1); // Skip program name
+
+    while let Some(arg) = iter.next() {
+        if arg.starts_with('-') {
+            // Skip flag arguments and their values
+            if arg == "--info" || arg == "--debug" {
+                continue;
+            }
+            // Skip flags that take values
+            if !arg.contains('=') {
+                // Might have a value in the next arg - skip it
+                if arg.starts_with("--") && !arg.ends_with("=") {
+                    // Could be --flag value format, but we can't easily tell
+                    // For global flags we know (--info, --debug), they don't take values
+                    continue;
+                }
+            }
+        } else {
+            // Found a non-flag argument - this should be the subcommand
+            return Some(arg.clone());
+        }
+    }
+    None
+}
+
+/// Extract arguments for a plugin command (everything after the command name).
+fn extract_command_args(args: &[String], cmd_name: &str) -> Vec<String> {
+    let mut found_cmd = false;
+    let mut result = Vec::new();
+
+    for arg in args.iter().skip(1) {
+        // Skip program name
+        if found_cmd {
+            result.push(arg.clone());
+        } else if arg == cmd_name {
+            found_cmd = true;
+        }
+    }
+
+    result
+}
+
+/// Run the CLI after successful Clap parsing.
+fn run_cli(cli: Cli) -> Result<()> {
     init_tracing(&cli.logging);
     let logging = cli.logging.clone();
     let prompt_input = cli.prompt_input.clone();
@@ -954,7 +1036,13 @@ fn main() -> Result<()> {
         }
         None => {
             if prompt_input.prompt.is_empty() && io::stdin().is_terminal() {
+                // Show help with plugin commands appended
+                let registry = create_registry();
                 Cli::command().print_help()?;
+                let plugin_help = registry.plugin_commands_help();
+                if !plugin_help.is_empty() {
+                    println!("{}", plugin_help);
+                }
                 println!();
             } else {
                 run_prompt(prompt_input, &logging)?;
