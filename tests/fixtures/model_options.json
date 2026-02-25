@@ -1,0 +1,9 @@
+{
+    "openai/gpt-4o": {
+        "temperature": 0.7,
+        "max_tokens": 4096
+    },
+    "anthropic/claude-3-opus": {
+        "temperature": 0.5
+    }
+}

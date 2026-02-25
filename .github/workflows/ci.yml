@@ -1,0 +1,215 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Pure Rust tests - no external dependencies
+  rust-tests:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [stable, beta]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Build
+        run: cargo build --all-targets
+      
+      - name: Run unit tests
+        run: cargo test --lib --all
+      
+      - name: Run integration tests
+        run: cargo test --test '*' --all
+
+  # Compatibility tests for upstream parity
+  compatibility-tests:
+    name: Compatibility Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Build
+        run: cargo build --all-targets
+      
+      - name: Run compatibility tests
+        run: |
+          cargo test --test upstream_compat
+          cargo test --test embeddings_compat
+          cargo test --test migration_roundtrip
+          cargo test --test golden
+
+  # Golden output tests
+  golden-tests:
+    name: Golden Output Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Build release
+        run: cargo build --release
+      
+      - name: Run golden tests
+        run: cargo test --test golden
+      
+      - name: Update golden files (on failure, for debugging)
+        if: failure()
+        run: UPDATE_GOLDEN=1 cargo test --test golden || true
+      
+      - name: Upload golden diff
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-diff
+          path: tests/fixtures/golden/
+
+  # Clippy lints
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # Format check
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # Documentation
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Build docs
+        run: cargo doc --no-deps --all
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # Python bridge tests (when bridge exists)
+  python-bridge-tests:
+    name: Python Bridge Tests
+    runs-on: ubuntu-latest
+    if: false  # Disabled until Python bridge is implemented
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install upstream llm
+        run: pip install llm
+      
+      - name: Build Rust CLI
+        run: cargo build --release
+      
+      - name: Run Python bridge tests
+        run: |
+          # Placeholder for Python bridge tests
+          echo "Python bridge tests not yet implemented"
+
+  # Third-party plugin smoke tests
+  plugin-smoke-tests:
+    name: Plugin Smoke Tests
+    runs-on: ubuntu-latest
+    if: false  # Disabled until plugin support is implemented
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Build
+        run: cargo build --release
+      
+      - name: Run plugin smoke tests
+        run: |
+          # Placeholder for plugin smoke tests
+          echo "Plugin smoke tests not yet implemented"
+
+  # Cross-platform tests
+  cross-platform:
+    name: Cross-Platform (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Build
+        run: cargo build --all-targets
+      
+      - name: Run tests
+        run: cargo test --all

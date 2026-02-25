@@ -8,6 +8,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 llm-core = { path = "../llm-core" }
 llm-plugin-host = { path = "../llm-plugin-host" }
+llm-embeddings = { path = "../llm-embeddings" }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
@@ -24,3 +25,7 @@ default = ["crossterm"]
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
+serde = { workspace = true }
+rusqlite = { workspace = true }
+regex = "1.10"
+ulid = { workspace = true }

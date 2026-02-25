@@ -926,15 +926,20 @@ dependencies = [
  "clap",
  "crossterm",
  "llm-core",
+ "llm-embeddings",
  "llm-plugin-host",
  "predicates",
+ "regex",
  "rpassword",
+ "rusqlite",
  "rustyline",
+ "serde",
  "serde_json",
  "shell-words",
  "tempfile",
  "tracing",
  "tracing-subscriber",
+ "ulid",
 ]
 
 [[package]]
@@ -954,6 +959,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tracing",
+ "ulid",
 ]
 
 [[package]]
@@ -961,7 +967,14 @@ name = "llm-embeddings"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
+ "chrono",
+ "reqwest",
+ "rusqlite",
  "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror 1.0.69",
  "tracing",
 ]
@@ -1972,6 +1985,16 @@ name = "typenum"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
+
+[[package]]
+name = "ulid"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
+dependencies = [
+ "rand",
+ "web-time",
+]
 
 [[package]]
 name = "unicode-ident"

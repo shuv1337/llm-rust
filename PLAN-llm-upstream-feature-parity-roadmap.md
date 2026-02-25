@@ -33,6 +33,39 @@
 - Default OpenAI models plugin: https://github.com/simonw/llm/blob/6b84a0d36b0df1341a9b64ef7001d56eee5e9185/llm/default_plugins/openai_models.py
 - Default tools plugin: https://github.com/simonw/llm/blob/6b84a0d36b0df1341a9b64ef7001d56eee5e9185/llm/default_plugins/default_tools.py
 
+## Central task log (execution tracking)
+
+Execution mode: multi-agent crew with subagent workers coordinated via `pi_messenger`.
+
+**Overall status:** ✅ 20/20 crew tasks completed  
+**Validation status:** ✅ `cargo test --workspace` passing after post-merge stabilization fixes
+
+| Task | Status | Assignee | Commit |
+|---|---|---|---|
+| task-1 Lock M0 Decisions and Create ADRs | ✅ Done | GoldIce | `24f454d` |
+| task-2 Config File Compatibility Layer | ✅ Done | ZenYak | `44cc869` |
+| task-3 Migration Engine Scaffold | ✅ Done | UltraStorm | `0f66dd5` |
+| task-4 Logs DB Schema Migration | ✅ Done | Crew worker | `bc2e77b` |
+| task-5 String ID Migration (int→ULID) | ✅ Done | Crew worker | `707772f` |
+| task-6 Provider Data Model Refactor | ✅ Done | CalmCastle | `083606f` |
+| task-7 OpenAI Tool/Schema Support | ✅ Done | Crew worker | `968609a` |
+| task-8 Anthropic Tool/Schema Support | ✅ Done | Crew worker | `c1717c2` |
+| task-9 Conversation Continuation Infrastructure | ✅ Done | Crew worker | `7b19912` |
+| task-10 Continuation Flag Migration Shim | ✅ Done | Crew worker | `a8e0ae6` |
+| task-11 Prompt Option Parity (core semantics) | ✅ Done | Crew worker | `f6cb291` |
+| task-12 Chat Command Implementation | ✅ Done | Crew worker | `e345e12` |
+| task-13 Aliases Command Group | ✅ Done | Crew worker | `d787d70` |
+| task-14 Templates Command Group | ✅ Done | Crew worker | `89d8330` |
+| task-15 Logs List Extended Options | ✅ Done | TrueBear | `01dcac3` |
+| task-16 Models Command Extended Options | ✅ Done | ZenMoon | `a784bab` |
+| task-17 Schemas and Tools Command Groups | ✅ Done | EpicQuartz | `e382f21` |
+| task-18 Embeddings Provider Abstraction | ✅ Done | SwiftDragon | `c1e0120` |
+| task-19 Embeddings CLI Commands | ✅ Done | YoungYak | `de1b651` |
+| task-20 Compatibility Test Suite | ✅ Done | NiceUnion | `766b6b2` |
+
+Post-merge stabilization commit(s):
+- `HEAD` (current working commit after crew waves): test-lock harmonization + template save path hardening to resolve parallel test flakiness.
+
 ---
 
 ## Parity snapshot (current)

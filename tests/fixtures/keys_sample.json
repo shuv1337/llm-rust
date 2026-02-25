@@ -1,0 +1,5 @@
+{
+    "// Note": "This file stores secret API credentials. Do not share!",
+    "openai": "sk-test-fixture-key",
+    "anthropic": "sk-ant-test-fixture-key"
+}

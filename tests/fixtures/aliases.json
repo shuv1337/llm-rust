@@ -1,0 +1,5 @@
+{
+    "fast": "openai/gpt-4o-mini",
+    "smart": "anthropic/claude-3-opus",
+    "default": "openai/gpt-4o"
+}

@@ -2,13 +2,24 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use llm_core::{
-    available_models, backup_logs, core_version, detect_mime_from_content, detect_mime_from_path,
-    detect_remote_mime, execute_prompt_with_messages, get_default_model, keys_path, list_key_names,
-    list_logs, load_keys, logs_db_path, logs_status, prompt_debug_info, resolve_key, save_key,
-    set_default_model, set_logging_enabled, stream_prompt_with_messages, Attachment, KeyQuery,
-    ListLogsOptions, LogEntry, MessageRole, ModelInfo, PromptConfig, PromptMessage, StreamSink,
+    aliases_path, available_models, backup_logs, core_version, detect_mime_from_content,
+    detect_mime_from_path, detect_remote_mime, embeddings_db_path, execute_prompt_with_messages,
+    get_default_model, get_latest_conversation_id, get_schema, get_tool, keys_path, list_aliases,
+    list_key_names, list_logs, list_schemas, list_tools, load_conversation_messages, load_keys,
+    logs_db_path, logs_status, migrations::generate_response_ulid, prompt_debug_info, query_models,
+    remove_alias, resolve_key, save_key, set_alias, set_default_model, set_logging_enabled,
+    stream_prompt_with_messages, Attachment, KeyQuery, ListLogsOptions, ListToolsOptions,
+    LogEntry, MessageRole, ModelInfo, PromptConfig, PromptMessage, SchemaEntry, StreamSink,
+    ToolEntry, delete_template, list_template_loaders, list_templates, load_template,
+    save_template, templates_path, Template, TemplateLoader, get_model_options,
+    list_model_options, remove_model_options, set_model_options, ModelOptions,
 };
 use llm_plugin_host::load_plugins;
+use llm_embeddings::{
+    EmbeddingProvider,
+    Collection, EmbedItem, Entry, OpenAIEmbeddingConfig, OpenAIEmbeddingProvider,
+    delete_collection, list_collections, list_embedding_models, resolve_embedding_model,
+};
 use rpassword::prompt_password;
 use rustyline::{error::ReadlineError, DefaultEditor};
 use shell_words::split as shell_split;
@@ -17,6 +28,8 @@ use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tempfile::NamedTempFile;
 use tracing::info;
 
@@ -25,6 +38,9 @@ struct PromptOptions {
     /// Override the model (defaults to env or gpt-4o-mini)
     #[arg(long)]
     model: Option<String>,
+    /// Model query terms to find a matching model (selects shortest match)
+    #[arg(long = "query")]
+    query: Option<String>,
     /// Sampling temperature for the provider
     #[arg(long)]
     temperature: Option<f32>,
@@ -46,6 +62,12 @@ struct PromptOptions {
     /// Disable logging for this invocation
     #[arg(long = "no-log", conflicts_with = "log")]
     no_log: bool,
+    /// Print token usage after response
+    #[arg(short = 'u', long = "usage")]
+    usage: bool,
+    /// Override the logs database path for this invocation
+    #[arg(long = "database")]
+    database: Option<String>,
 }
 
 impl PromptOptions {
@@ -59,6 +81,7 @@ impl PromptOptions {
         }
     }
 }
+
 
 #[derive(Args, Clone, Default)]
 struct PromptInputArgs {
@@ -81,9 +104,12 @@ struct PromptInputArgs {
         num_args = 2
     )]
     attachment_types: Vec<String>,
-    /// Conversation identifier to associate with this prompt
-    #[arg(short = 'c', long = "conversation")]
-    conversation: Option<String>,
+    /// Continue the most recent conversation
+    #[arg(short = 'c', long = "continue")]
+    continue_conversation: bool,
+    /// Conversation identifier to continue or associate with this prompt
+    #[arg(long = "cid", visible_alias = "conversation")]
+    cid: Option<String>,
     /// Optional display name for the conversation
     #[arg(long = "conversation-name")]
     conversation_name: Option<String>,
@@ -144,8 +170,28 @@ enum Command {
     Models(ModelsArgs),
     /// Manage stored API keys
     Keys(KeysArgs),
+    /// Manage model aliases
+    Aliases(AliasesArgs),
     /// Manage prompt logs (placeholder)
     Logs(LogsArgs),
+    /// Manage prompt templates
+    Templates(TemplatesArgs),
+    /// Manage JSON schemas used for structured output
+    Schemas(SchemasArgs),
+    /// Manage tools/functions for model interactions
+    Tools(ToolsArgs),
+    /// Embed content and store vectors
+    Embed(EmbedArgs),
+    /// Manage embedding models
+    EmbedModels(EmbedModelsArgs),
+    /// Bulk embed multiple files or database content
+    EmbedMulti(EmbedMultiArgs),
+    /// Find similar embeddings
+    Similar(SimilarArgs),
+    /// Manage embedding collections
+    Collections(CollectionsArgs),
+    /// Start an interactive chat session
+    Chat(ChatArgs),
     /// Generate and execute commands in your shell
     Cmd(CmdArgs),
     /// Display internal version information
@@ -157,6 +203,31 @@ struct PromptArgs {
     #[command(flatten)]
     input: PromptInputArgs,
 }
+
+#[derive(Args)]
+struct ChatArgs {
+    #[command(flatten)]
+    options: PromptOptions,
+    /// Custom system prompt override
+    #[arg(short, long)]
+    system: Option<String>,
+    /// API key or alias override for this invocation
+    #[arg(long)]
+    key: Option<String>,
+    /// Continue the most recent conversation
+    #[arg(short = 'c', long = "continue")]
+    continue_conversation: bool,
+    /// Conversation identifier to continue or associate with this chat
+    #[arg(long = "cid", visible_alias = "conversation")]
+    cid: Option<String>,
+    /// Optional display name for the conversation
+    #[arg(long = "conversation-name")]
+    conversation_name: Option<String>,
+    /// Override the model recorded for the conversation metadata
+    #[arg(long = "conversation-model")]
+    conversation_model: Option<String>,
+}
+
 
 #[derive(Args)]
 struct CmdArgs {
@@ -171,9 +242,12 @@ struct CmdArgs {
     /// The natural language description of the desired command
     #[arg()]
     prompt: Vec<String>,
-    /// Conversation identifier to associate with this prompt
-    #[arg(short = 'c', long = "conversation")]
-    conversation: Option<String>,
+    /// Continue the most recent conversation
+    #[arg(short = 'c', long = "continue")]
+    continue_conversation: bool,
+    /// Conversation identifier to continue or associate with this prompt
+    #[arg(long = "cid", visible_alias = "conversation")]
+    cid: Option<String>,
     /// Optional display name for the conversation
     #[arg(long = "conversation-name")]
     conversation_name: Option<String>,
@@ -218,6 +292,8 @@ enum ModelsSubcommand {
     List(ModelsListArgs),
     /// Get or set the default model
     Default(ModelsDefaultArgs),
+    /// Manage model default options
+    Options(ModelsOptionsArgs),
 }
 
 #[derive(Args)]
@@ -225,12 +301,80 @@ struct ModelsListArgs {
     /// Output as JSON
     #[arg(long)]
     json: bool,
+    /// Only show models that have stored default options
+    #[arg(long = "options")]
+    with_options: bool,
+    /// Only show models that support async execution
+    #[arg(long = "async")]
+    with_async: bool,
+    /// Only show models that support structured output schemas
+    #[arg(long = "schemas")]
+    with_schemas: bool,
+    /// Only show models that support tool/function calling
+    #[arg(long = "tools")]
+    with_tools: bool,
+    /// Filter models by query terms (matches name, description, aliases)
+    #[arg(short = 'q', long = "query")]
+    query: Option<String>,
+    /// Filter to a specific model by name
+    #[arg(short = 'm', long = "model")]
+    model: Option<String>,
 }
 
 #[derive(Args)]
 struct ModelsDefaultArgs {
     /// Optional name of the model to set as default
     model: Option<String>,
+}
+
+#[derive(Args)]
+struct ModelsOptionsArgs {
+    #[command(subcommand)]
+    command: Option<ModelsOptionsSubcommand>,
+}
+
+#[derive(Subcommand)]
+enum ModelsOptionsSubcommand {
+    /// List all models with stored default options
+    List(ModelsOptionsListArgs),
+    /// Show stored options for a specific model
+    Show(ModelsOptionsShowArgs),
+    /// Set a default option for a model
+    Set(ModelsOptionsSetArgs),
+    /// Clear all stored options for a model
+    Clear(ModelsOptionsClearArgs),
+}
+
+#[derive(Args)]
+struct ModelsOptionsListArgs {
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct ModelsOptionsShowArgs {
+    /// Model name to show options for
+    model: String,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct ModelsOptionsSetArgs {
+    /// Model name to set options for
+    model: String,
+    /// Option key (temperature, max_tokens, top_p, frequency_penalty, presence_penalty, system)
+    key: String,
+    /// Option value
+    value: String,
+}
+
+#[derive(Args)]
+struct ModelsOptionsClearArgs {
+    /// Model name to clear options for
+    model: String,
 }
 
 #[derive(Args)]
@@ -288,6 +432,45 @@ struct KeysSetArgs {
     value: Option<String>,
 }
 
+
+#[derive(Args)]
+struct AliasesArgs {
+    #[command(subcommand)]
+    command: Option<AliasesSubcommand>,
+}
+
+#[derive(Subcommand)]
+enum AliasesSubcommand {
+    /// Output the path to the aliases.json file
+    Path,
+    /// List all defined aliases
+    List(AliasesListArgs),
+    /// Set an alias for a model
+    Set(AliasesSetArgs),
+    /// Remove an alias
+    Remove(AliasesRemoveArgs),
+}
+
+#[derive(Args)]
+struct AliasesListArgs {
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct AliasesSetArgs {
+    /// Alias name to define
+    alias: String,
+    /// Model identifier the alias should resolve to
+    model: String,
+}
+
+#[derive(Args)]
+struct AliasesRemoveArgs {
+    /// Alias name to remove
+    alias: String,
+}
 #[derive(Args)]
 struct LogsArgs {
     #[command(subcommand)]
@@ -335,10 +518,10 @@ struct LogsListArgs {
     conversation: Option<String>,
     /// Only include entries with an id greater than this value
     #[arg(long = "id-gt", conflicts_with = "id_gte")]
-    id_gt: Option<i64>,
+    id_gt: Option<String>,
     /// Only include entries with an id greater than or equal to this value
     #[arg(long = "id-gte", conflicts_with = "id_gt")]
-    id_gte: Option<i64>,
+    id_gte: Option<String>,
     /// Only include entries logged on or after this timestamp (RFC3339 or YYYY-MM-DD)
     #[arg(long = "since", value_parser = parse_datetime)]
     since: Option<DateTime<Utc>>,
@@ -351,10 +534,369 @@ struct LogsListArgs {
     /// Alternative path to logs database
     #[arg(long = "database")]
     database: Option<String>,
+    /// Output only the response text (no prompt or metadata)
+    #[arg(short = 'r', long = "response")]
+    response_only: bool,
+    /// Extract fenced code blocks from the response
+    #[arg(short = 'x', long = "extract", conflicts_with = "extract_last")]
+    extract: bool,
+    /// Extract only the last fenced code block from the response
+    #[arg(long = "extract-last", visible_alias = "xl", conflicts_with = "extract")]
+    extract_last: bool,
+    /// Short output format (prompt and response only, no headers or metadata)
+    #[arg(long = "short")]
+    short: bool,
+    /// Truncate long prompts and responses to a reasonable length
+    #[arg(long = "truncate")]
+    truncate: bool,
+    /// Show only the most recent/latest entry
+    #[arg(long = "latest", conflicts_with = "current")]
+    latest: bool,
+    /// Show entries from the current/most recent conversation
+    #[arg(long = "current", conflicts_with = "latest")]
+    current: bool,
+    /// Filter to entries that used a specific fragment (placeholder - not yet implemented)
+    #[arg(long = "fragment", hide = true)]
+    fragment: Option<String>,
+    /// Filter to entries that made tool calls
+    #[arg(long = "tools")]
+    with_tools: bool,
+    /// Filter to entries that used a specific schema (placeholder - not yet implemented)
+    #[arg(long = "schema", hide = true)]
+    schema: Option<String>,
 }
 
+#[derive(Args)]
+struct TemplatesArgs {
+    #[command(subcommand)]
+    command: Option<TemplatesSubcommand>,
+}
+
+#[derive(Subcommand)]
+enum TemplatesSubcommand {
+    /// Output the path to the templates directory
+    Path,
+    /// List all available templates
+    List(TemplatesListArgs),
+    /// Show the content of a template
+    Show(TemplatesShowArgs),
+    /// Edit a template (creates if it doesn't exist)
+    Edit(TemplatesEditArgs),
+    /// List available template loaders
+    Loaders(TemplatesLoadersArgs),
+}
+
+#[derive(Args)]
+struct TemplatesListArgs {
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct TemplatesShowArgs {
+    /// Name of the template to show
+    name: String,
+}
+
+#[derive(Args)]
+struct TemplatesEditArgs {
+    /// Name of the template to edit
+    name: String,
+    /// Content to set (if omitted, opens editor)
+    #[arg(long)]
+    content: Option<String>,
+}
+
+#[derive(Args)]
+struct TemplatesLoadersArgs {
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct SchemasArgs {
+    #[command(subcommand)]
+    command: Option<SchemasSubcommand>,
+}
+
+#[derive(Subcommand)]
+enum SchemasSubcommand {
+    /// List all stored schemas
+    List(SchemasListArgs),
+    /// Show a specific schema by name/ID
+    Show(SchemasShowArgs),
+    /// Show schema DSL syntax help (placeholder)
+    Dsl,
+}
+
+#[derive(Args)]
+struct SchemasListArgs {
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct SchemasShowArgs {
+    /// Name/ID of the schema to show
+    name: String,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct ToolsArgs {
+    #[command(subcommand)]
+    command: Option<ToolsSubcommand>,
+}
+
+#[derive(Subcommand)]
+enum ToolsSubcommand {
+    /// List all stored tools
+    List(ToolsListArgs),
+    /// Show a specific tool by name
+    Show(ToolsShowArgs),
+}
+
+#[derive(Args)]
+struct ToolsListArgs {
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+    /// Only show tools with function definitions (input_schema)
+    #[arg(long)]
+    functions: bool,
+}
+
+#[derive(Args)]
+struct ToolsShowArgs {
+    /// Name of the tool to show
+    name: String,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+// ============================================================================
+// Embeddings Command Arguments
+// ============================================================================
+
+#[derive(Args)]
+struct EmbedArgs {
+    /// Text to embed (reads from stdin if not provided)
+    #[arg()]
+    content: Vec<String>,
+    /// Embedding model to use
+    #[arg(short, long)]
+    model: Option<String>,
+    /// Store embedding in a collection
+    #[arg(short, long)]
+    store: Option<String>,
+    /// ID for the stored embedding (required with --store)
+    #[arg(long)]
+    id: Option<String>,
+    /// JSON metadata to attach to the stored embedding
+    #[arg(long)]
+    metadata: Option<String>,
+    /// Output raw embedding vector (default: JSON format)
+    #[arg(long)]
+    raw: bool,
+    /// Override the embeddings database path
+    #[arg(long)]
+    database: Option<String>,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct EmbedModelsArgs {
+    #[command(subcommand)]
+    command: Option<EmbedModelsSubcommand>,
+}
+
+#[derive(Subcommand)]
+enum EmbedModelsSubcommand {
+    /// List available embedding models
+    List(EmbedModelsListArgs),
+    /// Get or set the default embedding model
+    Default(EmbedModelsDefaultArgs),
+}
+
+#[derive(Args)]
+struct EmbedModelsListArgs {
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct EmbedModelsDefaultArgs {
+    /// Model to set as default (if omitted, shows current default)
+    model: Option<String>,
+}
+
+#[derive(Args)]
+struct EmbedMultiArgs {
+    /// Collection name to store embeddings
+    collection: String,
+    /// Embedding model to use
+    #[arg(short, long)]
+    model: Option<String>,
+    /// Files to embed (can specify multiple)
+    #[arg(short, long = "files", value_name = "PATH")]
+    files: Vec<PathBuf>,
+    /// SQL query to read content from logs database
+    #[arg(long)]
+    sql: Option<String>,
+    /// Batch size for embedding requests
+    #[arg(long, default_value = "100")]
+    batch_size: usize,
+    /// Store content text along with embeddings
+    #[arg(long)]
+    store_content: bool,
+    /// Override the embeddings database path
+    #[arg(long)]
+    database: Option<String>,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct SimilarArgs {
+    /// Text to find similar embeddings for
+    #[arg()]
+    query: Vec<String>,
+    /// Collection to search in
+    #[arg(short, long, required = true)]
+    collection: String,
+    /// Number of results to return
+    #[arg(short, long, default_value = "10")]
+    number: usize,
+    /// Embedding model to use (must match collection's model)
+    #[arg(short, long)]
+    model: Option<String>,
+    /// Find similar to an existing entry by ID instead of query text
+    #[arg(long)]
+    id: Option<String>,
+    /// Override the embeddings database path
+    #[arg(long)]
+    database: Option<String>,
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct CollectionsArgs {
+    #[command(subcommand)]
+    command: Option<CollectionsSubcommand>,
+}
+
+#[derive(Subcommand)]
+enum CollectionsSubcommand {
+    /// List all collections
+    List(CollectionsListArgs),
+    /// Output the path to the embeddings database
+    Path,
+    /// Delete a collection
+    Delete(CollectionsDeleteArgs),
+}
+
+#[derive(Args)]
+struct CollectionsListArgs {
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+    /// Override the embeddings database path
+    #[arg(long)]
+    database: Option<String>,
+}
+
+#[derive(Args)]
+struct CollectionsDeleteArgs {
+    /// Name of the collection to delete
+    name: String,
+    /// Override the embeddings database path
+    #[arg(long)]
+    database: Option<String>,
+}
+
+/// Migrate legacy `-c <id>` flag usage to `--cid <id>`.
+///
+/// The upstream CLI changed the -c flag from taking an optional conversation ID
+/// to being a boolean --continue flag. For backwards compatibility, we detect
+/// the legacy pattern `-c <id> <prompt>` (where there's additional content after
+/// the ID) and rewrite it to `--cid <id> <prompt>`, emitting a deprecation warning.
+///
+/// We only trigger migration when:
+/// 1. `-c=<value>` form is used (unambiguous legacy syntax)
+/// 2. `-c <value>` is followed by more non-flag arguments (likely legacy usage)
+///
+/// If `-c <value>` has no additional arguments, we let clap handle it with new
+/// semantics (continue=true, value becomes the prompt).
+fn migrate_legacy_continuation_args(args: Vec<String>) -> Vec<String> {
+    let mut result = Vec::with_capacity(args.len());
+    let args_vec: Vec<String> = args;
+    let mut i = 0;
+    
+    while i < args_vec.len() {
+        let arg = &args_vec[i];
+        
+        // Handle `-c=<value>` form (unambiguous legacy syntax)
+        if arg.starts_with("-c=") {
+            let id = arg.strip_prefix("-c=").unwrap().to_string();
+            eprintln!(
+                "Warning: `-c=<id>` is deprecated. Use `--cid {}` instead. \
+                 The -c flag now means --continue (continue most recent conversation).",
+                id
+            );
+            result.push(format!("--cid={}", id));
+            i += 1;
+            continue;
+        }
+        
+        // Check for legacy `-c <value>` pattern
+        if arg == "-c" && i + 1 < args_vec.len() {
+            let next = &args_vec[i + 1];
+            // Only migrate if:
+            // 1. Next arg doesn't start with '-' (it's a value, not a flag)
+            // 2. There's at least one more argument after that (the prompt)
+            if !next.starts_with('-') && !next.is_empty() {
+                // Check if there are more non-flag arguments after the potential ID
+                let has_more_args = args_vec[i + 2..].iter().any(|a| !a.starts_with('-'));
+                
+                if has_more_args {
+                    // This looks like legacy `-c <id> <prompt>` usage
+                    let id = next.clone();
+                    eprintln!(
+                        "Warning: `-c <id>` is deprecated. Use `--cid {}` instead. \
+                         The -c flag now means --continue (continue most recent conversation).",
+                        id
+                    );
+                    result.push("--cid".to_string());
+                    result.push(id);
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        
+        result.push(arg.clone());
+        i += 1;
+    }
+    
+    result
+}
+
+
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let args = migrate_legacy_continuation_args(env::args().collect());
+    let cli = Cli::parse_from(args);
     init_tracing(&cli.logging);
     let logging = cli.logging.clone();
     let prompt_input = cli.prompt_input.clone();
@@ -371,8 +913,38 @@ fn main() -> Result<()> {
         Some(Command::Keys(args)) => {
             handle_keys(args)?;
         }
+        Some(Command::Aliases(args)) => {
+            handle_aliases(args)?;
+        }
         Some(Command::Logs(args)) => {
             handle_logs(args)?;
+        }
+        Some(Command::Chat(args)) => {
+            run_chat(args, &logging)?;
+        }
+        Some(Command::Templates(args)) => {
+            handle_templates(args)?;
+        }
+        Some(Command::Schemas(args)) => {
+            handle_schemas(args)?;
+        }
+        Some(Command::Tools(args)) => {
+            handle_tools(args)?;
+        }
+        Some(Command::Embed(args)) => {
+            handle_embed(args)?;
+        }
+        Some(Command::EmbedModels(args)) => {
+            handle_embed_models(args)?;
+        }
+        Some(Command::EmbedMulti(args)) => {
+            handle_embed_multi(args)?;
+        }
+        Some(Command::Similar(args)) => {
+            handle_similar(args)?;
+        }
+        Some(Command::Collections(args)) => {
+            handle_collections(args)?;
         }
         Some(Command::Cmd(args)) => {
             run_cmd(args, &logging)?;
@@ -381,7 +953,7 @@ fn main() -> Result<()> {
             print_version(args.verbose);
         }
         None => {
-            if prompt_input.prompt.is_empty() {
+            if prompt_input.prompt.is_empty() && io::stdin().is_terminal() {
                 Cli::command().print_help()?;
                 println!();
             } else {
@@ -399,31 +971,99 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
         key,
         attachments,
         attachment_types,
-        conversation,
+        continue_conversation,
+        cid,
         conversation_name,
         conversation_model,
         prompt: words,
     } = input;
-    let prompt = words.join(" ");
+    
+    // Resolve conversation ID: --continue uses latest, --cid uses explicit ID
+    let conversation_id = if continue_conversation {
+        // Get the most recent conversation ID from logs
+        get_latest_conversation_id()?
+    } else {
+        cid.clone()
+    };
+    
+    // Check if stdin has no attachment that uses it
+    let stdin_used_for_attachment = attachments.contains(&"-".to_string());
+    
+    // Read stdin if piped and not used for attachment
+    let stdin_content = if !stdin_used_for_attachment && !io::stdin().is_terminal() {
+        let mut buffer = String::new();
+        io::stdin().read_to_string(&mut buffer)
+            .context("failed to read from stdin")?;
+        // Only use stdin if it actually has content
+        if buffer.trim().is_empty() {
+            None
+        } else {
+            Some(buffer)
+        }
+    } else {
+        None
+    };
+    
+    // Merge stdin (first) with positional prompt (second) per upstream semantics
+    let positional_prompt = words.join(" ");
+    let prompt = match (&stdin_content, positional_prompt.is_empty()) {
+        (Some(stdin), true) => stdin.trim().to_string(),
+        (Some(stdin), false) => format!("{}\n{}", stdin.trim(), positional_prompt),
+        (None, _) => positional_prompt,
+    };
+    
+    // Resolve model: explicit --model takes precedence, then --query discovery
+    let resolved_model: Option<String> = if options.model.is_some() {
+        options.model.clone()
+    } else if let Some(ref query) = options.query {
+        let matches = query_models(query)?;
+        matches.first().map(|m| m.name.clone())
+    } else {
+        None
+    };
+    
     info!(%prompt, "Executing prompt via llm-core");
     let config = PromptConfig {
-        model: options.model.as_deref(),
+        database_path: options.database.as_deref(),
+        model: resolved_model.as_deref(),
         temperature: options.temperature,
         max_tokens: options.max_tokens,
         retries: options.retries.map(|v| v as usize),
         retry_backoff_ms: options.retry_backoff_ms,
         api_key: key.as_deref(),
         log_override: options.log_override(),
-        conversation_id: conversation.as_deref(),
+        conversation_id: conversation_id.as_deref(),
         conversation_name: conversation_name.as_deref(),
         conversation_model: conversation_model
             .as_deref()
-            .or_else(|| options.model.as_deref()),
+            .or(resolved_model.as_deref()),
     };
     let streaming = !options.no_stream;
     log_prompt_debug(logging, streaming, &config)?;
     let resolved_attachments = resolve_prompt_attachments(&attachments, &attachment_types)?;
-    let messages = build_messages(system.as_deref(), &prompt);
+    // Load conversation history if continuing
+    let mut messages = if let Some(ref conv_id) = conversation_id {
+        load_conversation_messages(conv_id)?
+    } else {
+        Vec::new()
+    };
+    
+    // Build new messages from current prompt
+    let new_messages = build_messages(system.as_deref(), &prompt);
+    
+    // Append new messages to history (or use new messages if no history)
+    if messages.is_empty() {
+        messages = new_messages;
+    } else {
+        // Skip system prompt from new messages if history already has one
+        for msg in new_messages {
+            if matches!(msg.role, MessageRole::System) && messages.iter().any(|m| matches!(m.role, MessageRole::System)) {
+                continue;
+            }
+            messages.push(msg);
+        }
+    }
+    
     if streaming {
         let mut sink = StdoutStreamSink::default();
         stream_prompt_with_messages(messages, resolved_attachments, config, &mut sink)?;
@@ -431,7 +1071,349 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
         let response = execute_prompt_with_messages(messages, resolved_attachments, config)?;
         println!("{response}");
     }
+    
+    // Note: --usage flag is implemented but requires UsageInfo from providers.
+    // Currently providers return String; full usage printing needs provider changes
+    // to return UsageInfo in the response.
+    if options.usage {
+        eprintln!("Token usage: (usage statistics require provider support)");
+    }
+    
     Ok(())
+}
+
+
+fn run_chat(args: ChatArgs, logging: &LoggingOptions) -> Result<()> {
+    let ChatArgs {
+        options,
+        system,
+        key,
+        continue_conversation,
+        cid,
+        conversation_name,
+        conversation_model,
+    } = args;
+
+    // Track if we are continuing an existing conversation
+    let is_continuation = continue_conversation || cid.is_some();
+
+    // Resolve or create conversation ID
+    let conversation_id = if continue_conversation {
+        get_latest_conversation_id()?.unwrap_or_else(|| generate_response_ulid())
+    } else if let Some(id) = cid {
+        id
+    } else {
+        generate_response_ulid()
+    };
+
+    // Resolve model
+    let resolved_model: Option<String> = if options.model.is_some() {
+        options.model.clone()
+    } else if let Some(ref query) = options.query {
+        let matches = query_models(query)?;
+        matches.first().map(|m| m.name.clone())
+    } else {
+        None
+    };
+
+    // Load conversation history if continuing
+    
+    let mut messages = if is_continuation {
+        load_conversation_messages(&conversation_id).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // Add system prompt if provided and not already in history
+    if let Some(ref sys) = system {
+        let has_system = messages.iter().any(|m| matches!(m.role, MessageRole::System));
+        if !has_system && !sys.trim().is_empty() {
+            messages.insert(0, PromptMessage::system(sys.trim()));
+        }
+    }
+
+    println!("Chatting with {}. Type '!help' for commands.", 
+             resolved_model.as_deref().unwrap_or("default model"));
+    println!("Conversation ID: {}", conversation_id);
+    println!();
+
+    let mut editor = DefaultEditor::new().context("failed to initialize readline editor")?;
+    let mut multi_line_mode = false;
+    let mut multi_line_buffer = String::new();
+
+    // Set up Ctrl+C handler for response cancellation
+    let interrupted = Arc::new(AtomicBool::new(false));
+
+    loop {
+        let prompt = if multi_line_mode { "... " } else { "> " };
+        
+        // Reset interrupt flag at start of each prompt
+        interrupted.store(false, Ordering::SeqCst);
+        
+        let line = match editor.readline(prompt) {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => {
+                if multi_line_mode {
+                    println!("Multi-line input cancelled.");
+                    multi_line_mode = false;
+                    multi_line_buffer.clear();
+                    continue;
+                }
+                println!("\nUse '!exit' or Ctrl+D to exit.");
+                continue;
+            }
+            Err(ReadlineError::Eof) => {
+                println!("\nGoodbye!");
+                break;
+            }
+            Err(ReadlineError::WindowResized) => continue,
+            Err(err) => return Err(err.into()),
+        };
+
+        // Handle multi-line mode
+        if multi_line_mode {
+            if line.trim() == "!end" || line.is_empty() {
+                multi_line_mode = false;
+                let input = std::mem::take(&mut multi_line_buffer);
+                if !input.trim().is_empty() {
+                    process_chat_input(
+                        &input,
+                        &mut messages,
+                        &conversation_id,
+                        conversation_name.as_deref(),
+                        conversation_model.as_deref().or(resolved_model.as_deref()),
+                        &options,
+                        key.as_deref(),
+                        logging,
+                        &interrupted,
+                    )?;
+                }
+                continue;
+            }
+            multi_line_buffer.push_str(&line);
+            multi_line_buffer.push('\n');
+            continue;
+        }
+
+        let trimmed = line.trim();
+        
+        // Handle special commands
+        if trimmed.starts_with('!') {
+            match trimmed {
+                "!exit" | "!quit" | "!q" => {
+                    println!("Goodbye!");
+                    break;
+                }
+                "!help" | "!h" | "!?" => {
+                    print_chat_help();
+                    continue;
+                }
+                "!multi" | "!m" => {
+                    println!("Entering multi-line mode. Type '!end' or empty line to send.");
+                    multi_line_mode = true;
+                    multi_line_buffer.clear();
+                    continue;
+                }
+                "!edit" | "!e" => {
+                    match edit_chat_input()? {
+                        Some(input) if !input.trim().is_empty() => {
+                            process_chat_input(
+                                &input,
+                                &mut messages,
+                                &conversation_id,
+                                conversation_name.as_deref(),
+                                conversation_model.as_deref().or(resolved_model.as_deref()),
+                                &options,
+                                key.as_deref(),
+                                logging,
+                                &interrupted,
+                            )?;
+                        }
+                        _ => println!("Edit cancelled or empty."),
+                    }
+                    continue;
+                }
+                "!clear" => {
+                    // Clear conversation history but keep system prompt
+                    let system_msg = messages.iter()
+                        .find(|m| matches!(m.role, MessageRole::System))
+                        .cloned();
+                    messages.clear();
+                    if let Some(sys) = system_msg {
+                        messages.push(sys);
+                    }
+                    println!("Conversation history cleared.");
+                    continue;
+                }
+                cmd if cmd.starts_with("!fragment ") || cmd.starts_with("!f ") => {
+                    let name = cmd.split_whitespace().nth(1).unwrap_or("");
+                    println!("Fragment support is not yet implemented. Fragment '{}' would be inserted here.", name);
+                    continue;
+                }
+                _ => {
+                    println!("Unknown command: {}. Type '!help' for available commands.", trimmed);
+                    continue;
+                }
+            }
+        }
+
+        // Skip empty input
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Add to history
+        let _ = editor.add_history_entry(&line);
+
+        // Process the input
+        process_chat_input(
+            trimmed,
+            &mut messages,
+            &conversation_id,
+            conversation_name.as_deref(),
+            conversation_model.as_deref().or(resolved_model.as_deref()),
+            &options,
+            key.as_deref(),
+            logging,
+            &interrupted,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn print_chat_help() {
+    println!("Chat commands:");
+    println!("  !help, !h, !?     - Show this help");
+    println!("  !exit, !quit, !q  - Exit chat");
+    println!("  !multi, !m        - Enter multi-line input mode (end with !end or empty line)");
+    println!("  !edit, !e         - Open $EDITOR for input");
+    println!("  !fragment <name>  - Insert a named fragment (not yet implemented)");
+    println!("  !clear            - Clear conversation history");
+    println!();
+    println!("Press Ctrl+C during a response to cancel it.");
+    println!("Press Ctrl+D at the prompt to exit.");
+}
+
+fn edit_chat_input() -> Result<Option<String>> {
+    let mut file = NamedTempFile::new().context("failed to create temporary file")?;
+    file.flush()?;
+    let path = file.into_temp_path();
+
+    let mut command = build_editor_command()?;
+    let path_ref: &Path = path.as_ref();
+    command.arg(path_ref);
+    let status = command.status().context("failed to launch editor")?;
+    if !status.success() {
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(&path).context("failed to read edited input")?;
+    let edited = contents.trim().to_string();
+    if edited.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(edited))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_chat_input(
+    input: &str,
+    messages: &mut Vec<PromptMessage>,
+    conversation_id: &str,
+    conversation_name: Option<&str>,
+    conversation_model: Option<&str>,
+    options: &PromptOptions,
+    key: Option<&str>,
+    logging: &LoggingOptions,
+    interrupted: &Arc<AtomicBool>,
+) -> Result<()> {
+    // Add user message to history
+    messages.push(PromptMessage::user(input));
+
+    let config = PromptConfig {
+        database_path: options.database.as_deref(),
+        model: options.model.as_deref(),
+        temperature: options.temperature,
+        max_tokens: options.max_tokens,
+        retries: options.retries.map(|v| v as usize),
+        retry_backoff_ms: options.retry_backoff_ms,
+        api_key: key,
+        log_override: options.log_override(),
+        conversation_id: Some(conversation_id),
+        conversation_name,
+        conversation_model,
+    };
+
+    log_prompt_debug(logging, !options.no_stream, &config)?;
+
+    // Stream the response
+    let mut sink = ChatStreamSink::new(interrupted.clone());
+    
+    match stream_prompt_with_messages(messages.clone(), Vec::new(), config, &mut sink) {
+        Ok(response) => {
+            // Add assistant response to history
+            messages.push(PromptMessage::assistant(&response));
+            
+            if options.usage {
+                eprintln!("Token usage: (usage statistics require provider support)");
+            }
+        }
+        Err(e) => {
+            // Remove the user message if the request failed
+            messages.pop();
+            
+            if sink.was_interrupted() {
+                println!("\n[Response cancelled]");
+            } else {
+                eprintln!("Error: {}", e);
+            }
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+/// Stream sink for chat that supports interruption via Ctrl+C
+struct ChatStreamSink {
+    started: bool,
+    interrupted: Arc<AtomicBool>,
+}
+
+impl ChatStreamSink {
+    fn new(interrupted: Arc<AtomicBool>) -> Self {
+        Self {
+            started: false,
+            interrupted,
+        }
+    }
+
+    fn was_interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::SeqCst)
+    }
+}
+
+impl StreamSink for ChatStreamSink {
+    fn handle_text_delta(&mut self, delta: &str) -> Result<()> {
+        // Check for interruption
+        if self.interrupted.load(Ordering::SeqCst) {
+            bail!("Response cancelled by user");
+        }
+        
+        print!("{}", delta);
+        io::stdout().flush().context("failed to flush stdout")?;
+        self.started = true;
+        Ok(())
+    }
+
+    fn handle_done(&mut self) -> Result<()> {
+        if self.started {
+            println!();
+        }
+        Ok(())
+    }
 }
 
 fn run_cmd(args: CmdArgs, logging: &LoggingOptions) -> Result<()> {
@@ -442,7 +1424,15 @@ fn run_cmd(args: CmdArgs, logging: &LoggingOptions) -> Result<()> {
     let system_prompt = args.system.as_deref().unwrap_or(CMD_SYSTEM_PROMPT);
     info!(%prompt, "Generating shell command via llm-core");
 
+    // Resolve conversation ID: --continue uses latest, --cid uses explicit ID
+    let conversation_id = if args.continue_conversation {
+        get_latest_conversation_id()?
+    } else {
+        args.cid.clone()
+    };
+
     let config = PromptConfig {
+        database_path: args.options.database.as_deref(),
         model: args.options.model.as_deref(),
         temperature: args.options.temperature,
         max_tokens: args.options.max_tokens,
@@ -450,7 +1440,7 @@ fn run_cmd(args: CmdArgs, logging: &LoggingOptions) -> Result<()> {
         retry_backoff_ms: args.options.retry_backoff_ms,
         api_key: args.key.as_deref(),
         log_override: args.options.log_override(),
-        conversation_id: args.conversation.as_deref(),
+        conversation_id: conversation_id.as_deref(),
         conversation_name: args.conversation_name.as_deref(),
         conversation_model: args
             .conversation_model
@@ -459,7 +1449,29 @@ fn run_cmd(args: CmdArgs, logging: &LoggingOptions) -> Result<()> {
     };
     log_prompt_debug(logging, false, &config)?;
 
-    let messages = build_cmd_messages(system_prompt, &prompt);
+    // Load conversation history if continuing
+    let mut messages = if let Some(ref conv_id) = conversation_id {
+        load_conversation_messages(conv_id)?
+    } else {
+        Vec::new()
+    };
+
+    // Build new messages for this command
+    let new_messages = build_cmd_messages(system_prompt, &prompt);
+
+    // Append new messages to history (or use new messages if no history)
+    if messages.is_empty() {
+        messages = new_messages;
+    } else {
+        // Skip system prompt from new messages if history already has one
+        for msg in new_messages {
+            if matches!(msg.role, MessageRole::System) && messages.iter().any(|m| matches!(m.role, MessageRole::System)) {
+                continue;
+            }
+            messages.push(msg);
+        }
+    }
+
     let suggestion = execute_prompt_with_messages(messages, Vec::new(), config)?;
     let suggestion = suggestion.trim().to_string();
     if suggestion.is_empty() {
@@ -487,16 +1499,10 @@ fn build_messages(system_prompt: Option<&str>, user_prompt: &str) -> Vec<PromptM
     if let Some(system_prompt) = system_prompt {
         let trimmed_system = system_prompt.trim();
         if !trimmed_system.is_empty() {
-            messages.push(PromptMessage {
-                role: MessageRole::System,
-                content: trimmed_system.to_string(),
-            });
+            messages.push(PromptMessage::system(trimmed_system));
         }
     }
-    messages.push(PromptMessage {
-        role: MessageRole::User,
-        content: user_prompt.to_string(),
-    });
+    messages.push(PromptMessage::user(user_prompt));
     messages
 }
 
@@ -687,14 +1693,57 @@ fn handle_models(args: ModelsArgs) -> Result<()> {
     match args.command {
         Some(ModelsSubcommand::List(list_args)) => list_models(list_args),
         Some(ModelsSubcommand::Default(def_args)) => default_model(def_args),
-        None => list_models(ModelsListArgs { json: false }),
+        Some(ModelsSubcommand::Options(opts_args)) => handle_models_options(opts_args),
+        None => list_models(ModelsListArgs {
+            json: false,
+            with_options: false,
+            with_async: false,
+            with_schemas: false,
+            with_tools: false,
+            query: None,
+            model: None,
+        }),
     }
 }
 
 fn list_models(args: ModelsListArgs) -> Result<()> {
     let mut models: Vec<ModelInfo> = available_models()?;
+    
+    // Apply filters
+    if args.with_options {
+        models.retain(|m| m.has_options);
+    }
+    if args.with_async {
+        models.retain(|m| m.supports_async);
+    }
+    if args.with_schemas {
+        models.retain(|m| m.supports_schemas);
+    }
+    if args.with_tools {
+        models.retain(|m| m.supports_tools);
+    }
+    if let Some(ref model_name) = args.model {
+        let model_lower = model_name.to_ascii_lowercase();
+        models.retain(|m| m.name.to_ascii_lowercase() == model_lower);
+    }
+    if let Some(ref query) = args.query {
+        let query_lower = query.to_ascii_lowercase();
+        let terms: Vec<&str> = query_lower.split_whitespace().collect();
+        models.retain(|m| {
+            let name_lower = m.name.to_ascii_lowercase();
+            let desc_lower = m.description.to_ascii_lowercase();
+            let aliases_lower: Vec<String> = m.aliases.iter().map(|a| a.to_ascii_lowercase()).collect();
+            terms.iter().all(|term| {
+                name_lower.contains(term)
+                    || desc_lower.contains(term)
+                    || aliases_lower.iter().any(|a| a.contains(term))
+            })
+        });
+    }
+    
     models.sort_by(|a, b| a.name.cmp(&b.name));
     models.sort_by_key(|m| (!m.is_default, m.name.clone()));
+    
     if args.json {
         let json = serde_json::to_string_pretty(&models)?;
         println!("{json}");
@@ -733,6 +1782,151 @@ fn default_model(args: ModelsDefaultArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn handle_models_options(args: ModelsOptionsArgs) -> Result<()> {
+    let command = args
+        .command
+        .unwrap_or(ModelsOptionsSubcommand::List(ModelsOptionsListArgs { json: false }));
+    match command {
+        ModelsOptionsSubcommand::List(list_args) => models_options_list(list_args),
+        ModelsOptionsSubcommand::Show(show_args) => models_options_show(show_args),
+        ModelsOptionsSubcommand::Set(set_args) => models_options_set(set_args),
+        ModelsOptionsSubcommand::Clear(clear_args) => models_options_clear(clear_args),
+    }
+}
+
+fn models_options_list(args: ModelsOptionsListArgs) -> Result<()> {
+    let options = list_model_options()?;
+    if args.json {
+        let map: std::collections::HashMap<String, ModelOptions> = options.into_iter().collect();
+        let json = serde_json::to_string_pretty(&map)?;
+        println!("{json}");
+        return Ok(());
+    }
+    if options.is_empty() {
+        println!("No model options configured.");
+        return Ok(());
+    }
+    for (model, opts) in options {
+        println!("{model}:");
+        print_model_options(&opts, "  ");
+    }
+    Ok(())
+}
+
+fn models_options_show(args: ModelsOptionsShowArgs) -> Result<()> {
+    let options = get_model_options(&args.model)?;
+    match options {
+        Some(opts) => {
+            if args.json {
+                let json = serde_json::to_string_pretty(&opts)?;
+                println!("{json}");
+            } else {
+                println!("Options for {}:", args.model);
+                print_model_options(&opts, "  ");
+            }
+        }
+        None => {
+            if args.json {
+                println!("null");
+            } else {
+                println!("No options configured for '{}'.", args.model);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn models_options_set(args: ModelsOptionsSetArgs) -> Result<()> {
+    let mut opts = get_model_options(&args.model)?.unwrap_or_default();
+    
+    match args.key.as_str() {
+        "temperature" => {
+            let value: f32 = args.value.parse()
+                .with_context(|| format!("Invalid temperature value: {}", args.value))?;
+            opts.temperature = Some(value);
+        }
+        "max_tokens" | "max-tokens" => {
+            let value: u32 = args.value.parse()
+                .with_context(|| format!("Invalid max_tokens value: {}", args.value))?;
+            opts.max_tokens = Some(value);
+        }
+        "top_p" | "top-p" => {
+            let value: f32 = args.value.parse()
+                .with_context(|| format!("Invalid top_p value: {}", args.value))?;
+            opts.top_p = Some(value);
+        }
+        "frequency_penalty" | "frequency-penalty" => {
+            let value: f32 = args.value.parse()
+                .with_context(|| format!("Invalid frequency_penalty value: {}", args.value))?;
+            opts.frequency_penalty = Some(value);
+        }
+        "presence_penalty" | "presence-penalty" => {
+            let value: f32 = args.value.parse()
+                .with_context(|| format!("Invalid presence_penalty value: {}", args.value))?;
+            opts.presence_penalty = Some(value);
+        }
+        "system" => {
+            opts.system = Some(args.value.clone());
+        }
+        "stop" => {
+            // Parse as comma-separated list or JSON array
+            let stops = if args.value.starts_with('[') {
+                serde_json::from_str(&args.value)
+                    .with_context(|| format!("Invalid stop sequences JSON: {}", args.value))?
+            } else {
+                args.value.split(',').map(|s| s.trim().to_string()).collect()
+            };
+            opts.stop = Some(stops);
+        }
+        other => {
+            bail!("Unknown option key '{}'. Valid keys: temperature, max_tokens, top_p, frequency_penalty, presence_penalty, system, stop", other);
+        }
+    }
+    
+    set_model_options(&args.model, &opts)?;
+    println!("Set {} = {} for model '{}'.", args.key, args.value, args.model);
+    Ok(())
+}
+
+fn models_options_clear(args: ModelsOptionsClearArgs) -> Result<()> {
+    let removed = remove_model_options(&args.model)?;
+    if removed {
+        println!("Cleared all options for '{}'.", args.model);
+    } else {
+        println!("No options were configured for '{}'.", args.model);
+    }
+    Ok(())
+}
+
+fn print_model_options(opts: &ModelOptions, indent: &str) {
+    if let Some(temp) = opts.temperature {
+        println!("{indent}temperature: {temp}");
+    }
+    if let Some(max) = opts.max_tokens {
+        println!("{indent}max_tokens: {max}");
+    }
+    if let Some(top_p) = opts.top_p {
+        println!("{indent}top_p: {top_p}");
+    }
+    if let Some(freq) = opts.frequency_penalty {
+        println!("{indent}frequency_penalty: {freq}");
+    }
+    if let Some(pres) = opts.presence_penalty {
+        println!("{indent}presence_penalty: {pres}");
+    }
+    if let Some(ref system) = opts.system {
+        let display = if system.len() > 50 {
+            format!("{}...", &system[..50])
+        } else {
+            system.clone()
+        };
+        println!("{indent}system: \"{display}\"");
+    }
+    if let Some(ref stops) = opts.stop {
+        println!("{indent}stop: {:?}", stops);
+    }
 }
 
 fn handle_keys(args: KeysArgs) -> Result<()> {
@@ -778,6 +1972,59 @@ fn handle_keys(args: KeysArgs) -> Result<()> {
     Ok(())
 }
 
+
+fn handle_aliases(args: AliasesArgs) -> Result<()> {
+    let command = args
+        .command
+        .unwrap_or_else(|| AliasesSubcommand::List(AliasesListArgs { json: false }));
+    match command {
+        AliasesSubcommand::Path => {
+            let path = aliases_path()?;
+            println!("{}", path.display());
+        }
+        AliasesSubcommand::List(list_args) => {
+            list_aliases_command(list_args.json)?;
+        }
+        AliasesSubcommand::Set(set_args) => {
+            set_alias(&set_args.alias, &set_args.model)?;
+            println!(
+                "Alias '{}' now points to '{}'.",
+                set_args.alias, set_args.model
+            );
+        }
+        AliasesSubcommand::Remove(remove_args) => {
+            let removed = remove_alias(&remove_args.alias)?;
+            if removed {
+                println!("Alias '{}' removed.", remove_args.alias);
+            } else {
+                bail!("No alias '{}' found.", remove_args.alias);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn list_aliases_command(as_json: bool) -> Result<()> {
+    let aliases = list_aliases()?;
+    if aliases.is_empty() {
+        if !as_json {
+            println!("No aliases defined.");
+        } else {
+            println!("{{}}");
+        }
+        return Ok(());
+    }
+    if as_json {
+        let map: std::collections::HashMap<String, String> = aliases.into_iter().collect();
+        let json = serde_json::to_string_pretty(&map)?;
+        println!("{json}");
+    } else {
+        for (alias, model) in aliases {
+            println!("{alias}: {model}");
+        }
+    }
+    Ok(())
+}
 fn handle_logs(args: LogsArgs) -> Result<()> {
     let command = args
         .command
@@ -804,6 +2051,765 @@ fn handle_logs(args: LogsArgs) -> Result<()> {
         LogsSubcommand::List(list_args) => {
             list_logs_command(list_args)?;
         }
+    }
+    Ok(())
+}
+
+fn handle_templates(args: TemplatesArgs) -> Result<()> {
+    let command = args
+        .command
+        .unwrap_or_else(|| TemplatesSubcommand::List(TemplatesListArgs { json: false }));
+    match command {
+        TemplatesSubcommand::Path => {
+            let path = templates_path()?;
+            println!("{}", path.display());
+        }
+        TemplatesSubcommand::List(list_args) => {
+            list_templates_command(list_args)?;
+        }
+        TemplatesSubcommand::Show(show_args) => {
+            show_template_command(show_args)?;
+        }
+        TemplatesSubcommand::Edit(edit_args) => {
+            edit_template_command(edit_args)?;
+        }
+        TemplatesSubcommand::Loaders(loaders_args) => {
+            list_loaders_command(loaders_args)?;
+        }
+    }
+    Ok(())
+}
+
+fn list_templates_command(args: TemplatesListArgs) -> Result<()> {
+    let templates = list_templates()?;
+    if args.json {
+        let json = serde_json::to_string_pretty(&templates)?;
+        println!("{json}");
+        return Ok(());
+    }
+    if templates.is_empty() {
+        println!("No templates found.");
+        return Ok(());
+    }
+    for name in templates {
+        println!("{name}");
+    }
+    Ok(())
+}
+
+fn show_template_command(args: TemplatesShowArgs) -> Result<()> {
+    let template = load_template(&args.name)?;
+    match template {
+        Some(t) => println!("{}", t.content),
+        None => bail!("Template '{}' not found", args.name),
+    }
+    Ok(())
+}
+
+fn edit_template_command(args: TemplatesEditArgs) -> Result<()> {
+    let content = if let Some(content) = args.content {
+        content
+    } else {
+        // Load existing content or start empty
+        let existing = load_template(&args.name)?
+            .map(|t| t.content)
+            .unwrap_or_default();
+        edit_template_with_editor(&existing)?
+    };
+    save_template(&args.name, &content)?;
+    println!("Template '{}' saved.", args.name);
+    Ok(())
+}
+
+fn edit_template_with_editor(initial: &str) -> Result<String> {
+    let mut file = NamedTempFile::new().context("failed to create temporary file")?;
+    write!(file, "{}", initial).context("failed to write to temporary file")?;
+    file.flush().context("failed to flush temporary file")?;
+    let path = file.into_temp_path();
+
+    let mut command = build_editor_command()?;
+    let path_ref: &Path = path.as_ref();
+    command.arg(path_ref);
+    let status = command.status().context("failed to launch editor")?;
+    if !status.success() {
+        bail!("Editor exited with status {status}");
+    }
+
+    let contents = fs::read_to_string(&path).context("failed to read edited template")?;
+    Ok(contents)
+}
+
+fn list_loaders_command(args: TemplatesLoadersArgs) -> Result<()> {
+    let loaders = list_template_loaders();
+    if args.json {
+        let json = serde_json::to_string_pretty(&loaders)?;
+        println!("{json}");
+        return Ok(());
+    }
+    if loaders.is_empty() {
+        println!("No template loaders available.");
+        return Ok(());
+    }
+    for loader in loaders {
+        println!("{}: {}", loader.name, loader.description);
+    }
+    Ok(())
+}
+
+// ============================================================================
+// Schemas Command Handlers
+// ============================================================================
+
+fn handle_schemas(args: SchemasArgs) -> Result<()> {
+    let command = args
+        .command
+        .unwrap_or_else(|| SchemasSubcommand::List(SchemasListArgs { json: false }));
+    match command {
+        SchemasSubcommand::List(list_args) => {
+            list_schemas_command(list_args)?;
+        }
+        SchemasSubcommand::Show(show_args) => {
+            show_schema_command(show_args)?;
+        }
+        SchemasSubcommand::Dsl => {
+            show_schemas_dsl_help()?;
+        }
+    }
+    Ok(())
+}
+
+fn list_schemas_command(args: SchemasListArgs) -> Result<()> {
+    let schemas = list_schemas()?;
+    if args.json {
+        let json = serde_json::to_string_pretty(&schemas)?;
+        println!("{json}");
+        return Ok(());
+    }
+    if schemas.is_empty() {
+        println!("No schemas stored in the database.");
+        println!("Schemas are created when using structured output with --schema.");
+        return Ok(());
+    }
+    println!("Stored schemas:");
+    for schema in &schemas {
+        let usage = if schema.usage_count == 1 {
+            "1 use".to_string()
+        } else {
+            format!("{} uses", schema.usage_count)
+        };
+        println!("  {} ({})", schema.id, usage);
+    }
+    Ok(())
+}
+
+fn show_schema_command(args: SchemasShowArgs) -> Result<()> {
+    let schema = get_schema(&args.name)?;
+    match schema {
+        Some(s) => {
+            if args.json {
+                let json = serde_json::to_string_pretty(&s)?;
+                println!("{json}");
+            } else {
+                println!("Schema: {}", s.id);
+                println!("Usage count: {}", s.usage_count);
+                if let Some(content) = &s.content {
+                    println!("\nContent:");
+                    // Try to pretty-print if it's valid JSON
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) {
+                        let pretty = serde_json::to_string_pretty(&parsed)?;
+                        println!("{pretty}");
+                    } else {
+                        println!("{content}");
+                    }
+                } else {
+                    println!("\n(No content stored)");
+                }
+            }
+        }
+        None => bail!("Schema '{}' not found", args.name),
+    }
+    Ok(())
+}
+
+fn show_schemas_dsl_help() -> Result<()> {
+    println!("Schema DSL Help");
+    println!("===============");
+    println!();
+    println!("Schemas define the structure for structured output from models.");
+    println!();
+    println!("Usage examples:");
+    println!("  llm --schema 'name: str, age: int' \"Extract person info\"");
+    println!("  llm --schema @schema.json \"Process with JSON schema\"");
+    println!();
+    println!("DSL syntax (simplified):");
+    println!("  field_name: type");
+    println!("  field_name: type = default");
+    println!();
+    println!("Supported types:");
+    println!("  str, string    - Text value");
+    println!("  int, integer   - Integer number");
+    println!("  float, number  - Floating point number");
+    println!("  bool, boolean  - True/false value");
+    println!("  list[type]     - Array of values");
+    println!("  dict, object   - Nested object");
+    println!();
+    println!("Note: Full DSL support is not yet implemented in the Rust CLI.");
+    println!("Use JSON schema files (@schema.json) for complex schemas.");
+    Ok(())
+}
+
+// ============================================================================
+// Tools Command Handlers
+// ============================================================================
+
+fn handle_tools(args: ToolsArgs) -> Result<()> {
+    let command = args
+        .command
+        .unwrap_or_else(|| ToolsSubcommand::List(ToolsListArgs { json: false, functions: false }));
+    match command {
+        ToolsSubcommand::List(list_args) => {
+            list_tools_command(list_args)?;
+        }
+        ToolsSubcommand::Show(show_args) => {
+            show_tool_command(show_args)?;
+        }
+    }
+    Ok(())
+}
+
+fn list_tools_command(args: ToolsListArgs) -> Result<()> {
+    let options = ListToolsOptions {
+        functions_only: args.functions,
+        ..Default::default()
+    };
+    let tools = list_tools(options)?;
+    if args.json {
+        let json = serde_json::to_string_pretty(&tools)?;
+        println!("{json}");
+        return Ok(());
+    }
+    if tools.is_empty() {
+        println!("No tools stored in the database.");
+        println!("Tools are recorded when models make function/tool calls.");
+        return Ok(());
+    }
+    println!("Stored tools:");
+    for tool in &tools {
+        let name = tool.name.as_deref().unwrap_or("<unnamed>");
+        let usage = if tool.usage_count == 1 {
+            "1 use".to_string()
+        } else {
+            format!("{} uses", tool.usage_count)
+        };
+        let plugin_info = tool.plugin.as_ref()
+            .map(|p| format!(" [{}]", p))
+            .unwrap_or_default();
+        let desc = tool.description.as_ref()
+            .map(|d| {
+                let truncated: String = d.chars().take(50).collect();
+                if d.len() > 50 { format!(" - {}...", truncated) } else { format!(" - {}", truncated) }
+            })
+            .unwrap_or_default();
+        println!("  {}{} ({}){}", name, plugin_info, usage, desc);
+    }
+    Ok(())
+}
+
+fn show_tool_command(args: ToolsShowArgs) -> Result<()> {
+    let tool = get_tool(&args.name)?;
+    match tool {
+        Some(t) => {
+            if args.json {
+                let json = serde_json::to_string_pretty(&t)?;
+                println!("{json}");
+            } else {
+                let name = t.name.as_deref().unwrap_or("<unnamed>");
+                println!("Tool: {}", name);
+                println!("Hash: {}", t.hash);
+                if let Some(plugin) = &t.plugin {
+                    println!("Plugin: {}", plugin);
+                }
+                println!("Usage count: {}", t.usage_count);
+                if let Some(desc) = &t.description {
+                    println!("\nDescription:");
+                    println!("  {}", desc);
+                }
+                if let Some(schema) = &t.input_schema {
+                    println!("\nInput Schema:");
+                    // Try to pretty-print if it's valid JSON
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(schema) {
+                        let pretty = serde_json::to_string_pretty(&parsed)?;
+                        for line in pretty.lines() {
+                            println!("  {}", line);
+                        }
+                    } else {
+                        println!("  {}", schema);
+                    }
+                }
+            }
+        }
+        None => bail!("Tool '{}' not found", args.name),
+    }
+    Ok(())
+}
+
+// ============================================================================
+// Embeddings Command Handlers
+// ============================================================================
+
+fn handle_embed(args: EmbedArgs) -> Result<()> {
+    let EmbedArgs {
+        content,
+        model,
+        store,
+        id,
+        metadata,
+        raw,
+        database,
+        json,
+    } = args;
+
+    // Read content from stdin if not provided
+    let text = if content.is_empty() {
+        let mut buffer = String::new();
+        io::stdin()
+            .read_to_string(&mut buffer)
+            .context("failed to read from stdin")?;
+        buffer.trim().to_string()
+    } else {
+        content.join(" ")
+    };
+
+    if text.is_empty() {
+        bail!("No content provided to embed. Pass content as argument or pipe to stdin.");
+    }
+
+    // Resolve embedding model
+    let model_name = model.unwrap_or_else(|| "text-embedding-3-small".to_string());
+    let resolved_model = resolve_embedding_model(&model_name)
+        .map(|s| s.to_string())
+        .unwrap_or(model_name);
+
+    // Create embedding provider
+    let provider = OpenAIEmbeddingProvider::from_env(&resolved_model)
+        .context("failed to create embedding provider")?;
+
+    // Generate embedding
+    let result = provider.embed(&text)
+        .context("failed to generate embedding")?;
+
+    // Store if requested
+    if let Some(collection_name) = store {
+        let embed_id = id.unwrap_or_else(|| {
+            // Generate a unique ID if not provided
+            format!("emb_{}", chrono::Utc::now().timestamp_millis())
+        });
+
+        let db_path = database
+            .map(PathBuf::from)
+            .or_else(|| embeddings_db_path().ok())
+            .ok_or_else(|| anyhow!("failed to determine embeddings database path"))?;
+
+        let collection = Collection::open(&db_path, &collection_name, Some(&resolved_model))
+            .context("failed to open collection")?;
+
+        let metadata_value: Option<serde_json::Value> = metadata
+            .as_ref()
+            .map(|m| serde_json::from_str(m))
+            .transpose()
+            .context("invalid JSON metadata")?;
+
+        collection.store(&embed_id, &result.embedding, Some(&text), metadata_value)
+            .context("failed to store embedding")?;
+
+        if json {
+            let output = serde_json::json!({
+                "id": embed_id,
+                "collection": collection_name,
+                "model": resolved_model,
+                "dimensions": result.embedding.len(),
+                "tokens": result.tokens,
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            println!("Stored embedding '{}' in collection '{}'", embed_id, collection_name);
+            println!("Model: {}", resolved_model);
+            println!("Dimensions: {}", result.embedding.len());
+            if let Some(tokens) = result.tokens {
+                println!("Tokens: {}", tokens);
+            }
+        }
+    } else {
+        // Output the embedding
+        if raw {
+            // Output as space-separated floats
+            let values: Vec<String> = result.embedding.iter().map(|f: &f32| f.to_string()).collect();
+            println!("{}", values.join(" "));
+        } else if json {
+            let output = serde_json::json!({
+                "embedding": result.embedding,
+                "model": resolved_model,
+                "dimensions": result.embedding.len(),
+                "tokens": result.tokens,
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            println!("Model: {}", resolved_model);
+            println!("Dimensions: {}", result.embedding.len());
+            if let Some(tokens) = result.tokens {
+                println!("Tokens: {}", tokens);
+            }
+            println!("\nEmbedding (first 10 dimensions):");
+            for (i, val) in result.embedding.iter().take(10).enumerate() {
+                println!("  [{:4}] {:.6}", i, val);
+            }
+            if result.embedding.len() > 10 {
+                println!("  ... ({} more dimensions)", result.embedding.len() - 10);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_embed_models(args: EmbedModelsArgs) -> Result<()> {
+    let command = args.command.unwrap_or(EmbedModelsSubcommand::List(EmbedModelsListArgs { json: false }));
+    match command {
+        EmbedModelsSubcommand::List(list_args) => {
+            embed_models_list(list_args)?;
+        }
+        EmbedModelsSubcommand::Default(default_args) => {
+            embed_models_default(default_args)?;
+        }
+    }
+    Ok(())
+}
+
+fn embed_models_list(args: EmbedModelsListArgs) -> Result<()> {
+    let models = list_embedding_models();
+
+    if args.json {
+        let json = serde_json::to_string_pretty(&models)?;
+        println!("{json}");
+        return Ok(());
+    }
+
+    println!("Available embedding models:\n");
+    for model in &models {
+        let aliases = if model.aliases.is_empty() {
+            String::new()
+        } else {
+            format!(" (aliases: {})", model.aliases.join(", "))
+        };
+        let dims = model.dimensions
+            .map(|d| format!("{} dims", d))
+            .unwrap_or_else(|| "unknown dims".to_string());
+        println!("  {} ({}) - {}{}", model.model_id, model.provider, dims, aliases);
+    }
+    Ok(())
+}
+
+fn embed_models_default(args: EmbedModelsDefaultArgs) -> Result<()> {
+    // Note: Default embedding model is not persisted yet - this is a placeholder
+    if let Some(model) = args.model {
+        let resolved = resolve_embedding_model(&model)
+            .map(|s| s.to_string())
+            .unwrap_or(model.clone());
+        println!("Default embedding model would be set to: {}", resolved);
+        println!("Note: Persistent default embedding model is not yet implemented.");
+    } else {
+        println!("Current default embedding model: text-embedding-3-small");
+        println!("Note: Persistent default embedding model is not yet implemented.");
+    }
+    Ok(())
+}
+
+fn handle_embed_multi(args: EmbedMultiArgs) -> Result<()> {
+    let EmbedMultiArgs {
+        collection,
+        model,
+        files,
+        sql,
+        batch_size,
+        store_content,
+        database,
+        json: json_output,
+    } = args;
+
+    if files.is_empty() && sql.is_none() {
+        bail!("Specify files with --files or content source with --sql");
+    }
+
+    // Resolve embedding model
+    let model_name = model.unwrap_or_else(|| "text-embedding-3-small".to_string());
+    let resolved_model = resolve_embedding_model(&model_name)
+        .map(|s| s.to_string())
+        .unwrap_or(model_name);
+
+    // Create embedding provider
+    let provider = OpenAIEmbeddingProvider::from_env(&resolved_model)
+        .context("failed to create embedding provider")?;
+
+    // Open collection
+    let db_path = database
+        .map(PathBuf::from)
+        .or_else(|| embeddings_db_path().ok())
+        .ok_or_else(|| anyhow!("failed to determine embeddings database path"))?;
+
+    let coll = Collection::open(&db_path, &collection, Some(&resolved_model))
+        .context("failed to open collection")?;
+
+    let mut total_embedded = 0usize;
+    let mut total_skipped = 0usize;
+
+    // Process files
+    if !files.is_empty() {
+        let mut items: Vec<EmbedItem> = Vec::new();
+
+        for file_path in &files {
+            if !file_path.exists() {
+                eprintln!("Warning: File not found: {}", file_path.display());
+                total_skipped += 1;
+                continue;
+            }
+
+            let content = fs::read_to_string(file_path)
+                .with_context(|| format!("failed to read file: {}", file_path.display()))?;
+
+            if content.trim().is_empty() {
+                eprintln!("Warning: Empty file: {}", file_path.display());
+                total_skipped += 1;
+                continue;
+            }
+
+            let id = file_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let metadata = serde_json::json!({
+                "source": "file",
+                "path": file_path.display().to_string(),
+            });
+
+            items.push(EmbedItem::new(id, content).with_metadata(metadata));
+        }
+
+        // Batch embed
+        for chunk in items.chunks(batch_size) {
+            coll.embed_multi(&provider, chunk, store_content)
+                .context("failed to embed batch")?;
+            total_embedded += chunk.len();
+            if !json_output {
+                eprint!("\rEmbedded {} items...", total_embedded);
+            }
+        }
+    }
+
+    // Process SQL query (placeholder - requires logs DB access)
+    if let Some(query) = sql {
+        if json_output {
+            eprintln!("SQL embedding source is not yet fully implemented");
+        } else {
+            println!("\nSQL query support is not yet fully implemented.");
+            println!("Query: {}", query);
+        }
+    }
+
+    if json_output {
+        let output = serde_json::json!({
+            "collection": collection,
+            "model": resolved_model,
+            "embedded": total_embedded,
+            "skipped": total_skipped,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("\nDone!");
+        println!("Collection: {}", collection);
+        println!("Model: {}", resolved_model);
+        println!("Embedded: {} items", total_embedded);
+        if total_skipped > 0 {
+            println!("Skipped: {} items", total_skipped);
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_similar(args: SimilarArgs) -> Result<()> {
+    let SimilarArgs {
+        query,
+        collection,
+        number,
+        model,
+        id,
+        database,
+        json: json_output,
+    } = args;
+
+    // Open collection
+    let db_path = database
+        .map(PathBuf::from)
+        .or_else(|| embeddings_db_path().ok())
+        .ok_or_else(|| anyhow!("failed to determine embeddings database path"))?;
+
+    if !db_path.exists() {
+        bail!("Embeddings database not found at: {}", db_path.display());
+    }
+
+    // Open collection (model is optional - will use stored model)
+    let coll = Collection::open(&db_path, &collection, model.as_deref())
+        .with_context(|| format!("failed to open collection '{}'", collection))?;
+
+    let results: Vec<Entry> = if let Some(entry_id) = id {
+        // Find similar to existing entry
+        coll.similar_by_id(&entry_id, number)
+            .with_context(|| format!("failed to find similar entries to '{}'", entry_id))?
+    } else {
+        // Find similar to query text
+        let query_text = if query.is_empty() {
+            let mut buffer = String::new();
+            io::stdin()
+                .read_to_string(&mut buffer)
+                .context("failed to read query from stdin")?;
+            buffer.trim().to_string()
+        } else {
+            query.join(" ")
+        };
+
+        if query_text.is_empty() {
+            bail!("No query provided. Pass query as argument, use --id, or pipe to stdin.");
+        }
+
+        // Resolve model (use collection's model if not specified)
+        let model_name = model.unwrap_or_else(|| coll.model_id().to_string());
+        let resolved_model = resolve_embedding_model(&model_name)
+            .map(|s| s.to_string())
+            .unwrap_or(model_name);
+
+        let provider = OpenAIEmbeddingProvider::from_env(&resolved_model)
+            .context("failed to create embedding provider")?;
+
+        coll.similar(&provider, &query_text, number)
+            .context("failed to find similar entries")?
+    };
+
+    if json_output {
+        let json = serde_json::to_string_pretty(&results)?;
+        println!("{json}");
+    } else {
+        if results.is_empty() {
+            println!("No similar entries found in collection '{}'.", collection);
+            return Ok(());
+        }
+
+        println!("Similar entries in collection '{}':\n", collection);
+        for (i, entry) in results.iter().enumerate() {
+            let score = entry.score.map(|s| format!("{:.4}", s)).unwrap_or_else(|| "N/A".to_string());
+            println!("{}. {} (score: {})", i + 1, entry.id, score);
+            if let Some(ref content) = entry.content {
+                let preview: String = content.chars().take(100).collect();
+                let ellipsis = if content.len() > 100 { "..." } else { "" };
+                println!("   {}{}", preview, ellipsis);
+            }
+            if let Some(ref meta) = entry.metadata {
+                println!("   metadata: {}", meta);
+            }
+            println!();
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_collections(args: CollectionsArgs) -> Result<()> {
+    let command = args.command.unwrap_or(CollectionsSubcommand::List(CollectionsListArgs {
+        json: false,
+        database: None,
+    }));
+    match command {
+        CollectionsSubcommand::List(list_args) => {
+            collections_list(list_args)?;
+        }
+        CollectionsSubcommand::Path => {
+            collections_path()?;
+        }
+        CollectionsSubcommand::Delete(delete_args) => {
+            collections_delete(delete_args)?;
+        }
+    }
+    Ok(())
+}
+
+fn collections_list(args: CollectionsListArgs) -> Result<()> {
+    let db_path = args.database
+        .map(PathBuf::from)
+        .or_else(|| embeddings_db_path().ok())
+        .ok_or_else(|| anyhow!("failed to determine embeddings database path"))?;
+
+    if !db_path.exists() {
+        if args.json {
+            println!("[]");
+        } else {
+            println!("No embeddings database found at: {}", db_path.display());
+            println!("Create a collection with `llm embed --store <collection> <text>`");
+        }
+        return Ok(());
+    }
+
+    let collections = list_collections(&db_path)
+        .context("failed to list collections")?;
+
+    if args.json {
+        let items: Vec<serde_json::Value> = collections
+            .iter()
+            .map(|(name, model)| serde_json::json!({
+                "name": name,
+                "model": model,
+            }))
+            .collect();
+        let json = serde_json::to_string_pretty(&items)?;
+        println!("{json}");
+        return Ok(());
+    }
+
+    if collections.is_empty() {
+        println!("No collections found.");
+        return Ok(());
+    }
+
+    println!("Collections in {}:\n", db_path.display());
+    for (name, model) in &collections {
+        println!("  {} (model: {})", name, model);
+    }
+    Ok(())
+}
+
+fn collections_path() -> Result<()> {
+    let path = embeddings_db_path()?;
+    println!("{}", path.display());
+    Ok(())
+}
+
+fn collections_delete(args: CollectionsDeleteArgs) -> Result<()> {
+    let db_path = args.database
+        .map(PathBuf::from)
+        .or_else(|| embeddings_db_path().ok())
+        .ok_or_else(|| anyhow!("failed to determine embeddings database path"))?;
+
+    if !db_path.exists() {
+        bail!("Embeddings database not found at: {}", db_path.display());
+    }
+
+    let deleted = delete_collection(&db_path, &args.name)
+        .context("failed to delete collection")?;
+
+    if deleted {
+        println!("Deleted collection '{}'", args.name);
+    } else {
+        bail!("Collection '{}' not found", args.name);
     }
     Ok(())
 }
@@ -850,6 +2856,76 @@ fn backup_logs_command(args: LogsBackupArgs) -> Result<()> {
     Ok(())
 }
 
+/// Display options for log entries.
+#[derive(Default)]
+struct LogDisplayOptions {
+    response_only: bool,
+    extract: bool,
+    extract_last: bool,
+    short: bool,
+    truncate: bool,
+}
+
+/// Extract fenced code blocks from text.
+/// Returns all code blocks found, preserving their order.
+fn extract_code_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut in_block = false;
+    let mut current_block = String::new();
+    let mut fence_char = ' ';
+    let mut fence_len = 0;
+    
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        
+        if !in_block {
+            // Check for opening fence (``` or ~~~)
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                fence_char = trimmed.chars().next().unwrap();
+                fence_len = trimmed.chars().take_while(|&c| c == fence_char).count();
+                if fence_len >= 3 {
+                    in_block = true;
+                    current_block.clear();
+                    continue;
+                }
+            }
+        } else {
+            // Check for closing fence
+            let close_fence: String = std::iter::repeat(fence_char).take(fence_len).collect();
+            if trimmed.starts_with(&close_fence) && trimmed.trim_start_matches(fence_char).trim().is_empty() {
+                blocks.push(current_block.trim_end().to_string());
+                in_block = false;
+                current_block.clear();
+            } else {
+                if !current_block.is_empty() {
+                    current_block.push('\n');
+                }
+                current_block.push_str(line);
+            }
+        }
+    }
+    
+    // If we ended while still in a block, include it anyway
+    if in_block && !current_block.is_empty() {
+        blocks.push(current_block.trim_end().to_string());
+    }
+    
+    blocks
+}
+
+/// Truncate text to a maximum length, adding ellipsis if truncated.
+fn truncate_text(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        text.to_string()
+    } else {
+        let truncated: String = text.chars().take(max_len.saturating_sub(3)).collect();
+        format!("{}...", truncated)
+    }
+}
+
+/// Default truncation length for --truncate option.
+const TRUNCATE_LENGTH: usize = 100;
+
 fn list_logs_command(args: LogsListArgs) -> Result<()> {
     let LogsListArgs {
         count,
@@ -863,24 +2939,73 @@ fn list_logs_command(args: LogsListArgs) -> Result<()> {
         before,
         path,
         database,
+        response_only,
+        extract,
+        extract_last,
+        short,
+        truncate,
+        latest,
+        current,
+        fragment,
+        with_tools,
+        schema,
     } = args;
 
     let mut options = ListLogsOptions::default();
-    match count.unwrap_or(3) {
-        0 => options.limit = None,
-        value => options.limit = Some(value),
+    
+    // Handle --latest: override count to 1
+    if latest {
+        options.limit = Some(1);
+    } else {
+        match count.unwrap_or(3) {
+            0 => options.limit = None,
+            value => options.limit = Some(value),
+        }
     }
+    
     options.newest_first = true;
     options.model = model;
     options.query = query;
-    options.conversation_id = conversation;
     options.id_gt = id_gt;
     options.id_gte = id_gte;
     options.since = since;
     options.before = before;
     options.database_path = database.or(path).map(PathBuf::from);
+    
+    // Handle --tools filter
+    if with_tools {
+        options.with_tool_calls = Some(true);
+    }
+    
+    // Handle --schema filter (placeholder)
+    if let Some(schema_id) = schema {
+        options.schema_id = Some(schema_id);
+    }
+    
+    // Handle --fragment filter (placeholder)
+    if let Some(frag_id) = fragment {
+        options.fragment_id = Some(frag_id);
+    }
+    
+    // Handle --current: get the latest conversation ID and filter by it
+    let conversation_id = if current {
+        get_latest_conversation_id()?
+    } else {
+        conversation
+    };
+    options.conversation_id = conversation_id;
 
     let entries = list_logs(options)?;
+    
+    // Build display options
+    let display_opts = LogDisplayOptions {
+        response_only,
+        extract,
+        extract_last,
+        short,
+        truncate,
+    };
+    
     if json {
         let json = serde_json::to_string_pretty(&entries)?;
         println!("{json}");
@@ -896,12 +3021,66 @@ fn list_logs_command(args: LogsListArgs) -> Result<()> {
         if index > 0 {
             println!();
         }
-        display_log_entry(entry);
+        display_log_entry_with_options(entry, &display_opts);
     }
     Ok(())
 }
 
-fn display_log_entry(entry: &LogEntry) {
+fn display_log_entry_with_options(entry: &LogEntry, opts: &LogDisplayOptions) {
+    let response_text = entry.response.as_deref().unwrap_or("");
+    
+    // Handle extract modes
+    if opts.extract || opts.extract_last {
+        let blocks = extract_code_blocks(response_text);
+        if opts.extract_last {
+            // Output only the last code block
+            if let Some(last) = blocks.last() {
+                println!("{}", last);
+            }
+        } else {
+            // Output all code blocks
+            for (i, block) in blocks.iter().enumerate() {
+                if i > 0 {
+                    println!();
+                }
+                println!("{}", block);
+            }
+        }
+        return;
+    }
+    
+    // Handle response-only mode
+    if opts.response_only {
+        let text = if opts.truncate {
+            truncate_text(response_text, TRUNCATE_LENGTH)
+        } else {
+            response_text.to_string()
+        };
+        println!("{}", text);
+        return;
+    }
+    
+    // Handle short mode (prompt and response only, no metadata)
+    if opts.short {
+        let prompt_text = entry.prompt.as_deref().unwrap_or("-- none --");
+        let (prompt_display, response_display) = if opts.truncate {
+            (
+                truncate_text(prompt_text, TRUNCATE_LENGTH),
+                truncate_text(response_text, TRUNCATE_LENGTH),
+            )
+        } else {
+            (prompt_text.to_string(), response_text.to_string())
+        };
+        println!("Prompt: {}", prompt_display);
+        println!("Response: {}", response_display);
+        return;
+    }
+    
+    // Full display mode
+    display_log_entry_full(entry, opts.truncate);
+}
+
+fn display_log_entry_full(entry: &LogEntry, truncate: bool) {
     let timestamp = entry
         .datetime_utc
         .as_deref()
@@ -933,28 +3112,38 @@ fn display_log_entry(entry: &LogEntry) {
     if let Some(duration) = entry.duration_ms {
         println!("Duration: {} ms", duration);
     }
-    println!(
-        "\nPrompt:\n{}\n",
-        entry
-            .prompt
-            .as_deref()
-            .filter(|p| !p.is_empty())
-            .unwrap_or("-- none --")
-    );
-    println!(
-        "Response:\n{}\n",
-        entry
-            .response
-            .as_deref()
-            .filter(|r| !r.is_empty())
-            .unwrap_or("-- none --")
-    );
+    
+    let prompt_text = entry
+        .prompt
+        .as_deref()
+        .filter(|p| !p.is_empty())
+        .unwrap_or("-- none --");
+    let response_text = entry
+        .response
+        .as_deref()
+        .filter(|r| !r.is_empty())
+        .unwrap_or("-- none --");
+    
+    let (prompt_display, response_display) = if truncate {
+        (
+            truncate_text(prompt_text, TRUNCATE_LENGTH),
+            truncate_text(response_text, TRUNCATE_LENGTH),
+        )
+    } else {
+        (prompt_text.to_string(), response_text.to_string())
+    };
+    
+    println!("\nPrompt:\n{}\n", prompt_display);
+    println!("Response:\n{}\n", response_display);
+    
     if let Some(input) = entry.input_tokens {
         if let Some(output) = entry.output_tokens {
             println!("Token usage: input {} • output {}", input, output);
         }
     }
 }
+
+
 
 fn human_readable_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];

@@ -17,23 +17,57 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+mod aliases;
+pub mod migrations;
 mod attachments;
 mod logs;
+mod model_options;
 mod providers;
+mod templates;
+pub use aliases::{
+    aliases_path, get_alias, list_aliases, load_aliases, remove_alias, resolve_user_alias,
+    save_aliases, set_alias, Aliases,
+};
 pub use attachments::{
     detect_mime_from_content, detect_mime_from_path, detect_remote_mime, Attachment,
 };
 pub use logs::{
-    backup_logs, list_logs, logs_enabled, logs_status, set_logging_enabled, ListLogsOptions,
-    LogEntry, LogsStatus,
+    backup_logs, get_latest_conversation_id, get_schema, get_tool, list_logs, list_schemas,
+    list_tools, load_conversation_messages, logs_enabled, logs_status, set_logging_enabled,
+    ListLogsOptions, ListToolsOptions, LogEntry, LogsStatus, SchemaEntry, ToolEntry,
 };
-pub use providers::{MessageRole, PromptMessage, StreamSink};
+pub use model_options::{
+    get_model_options, list_model_options, load_model_options, model_options_path,
+    remove_model_options, resolve_model_options, save_model_options, set_model_options,
+    ModelOptions, StoredModelOptions,
+};
+pub use providers::{MessageRole, PromptMessage, StreamSink, UsageInfo};
+pub use templates::{
+    delete_template, get_template, list_template_loaders, list_templates, load_template,
+    save_template, templates_path, Template, TemplateLoader,
+};
 
 struct BuiltinModel {
     canonical: &'static str,
     provider: &'static str,
     description: &'static str,
     aliases: &'static [&'static str],
+}
+
+/// Determine if a provider supports tool calling.
+fn provider_supports_tools(provider: &str) -> bool {
+    matches!(provider, "openai" | "anthropic")
+}
+
+/// Determine if a provider supports structured output schemas.
+fn provider_supports_schemas(provider: &str) -> bool {
+    matches!(provider, "openai" | "anthropic")
+}
+
+/// Determine if a provider supports async execution.
+fn provider_supports_async(provider: &str) -> bool {
+    // Currently none of the built-in providers support async execution mode
+    matches!(provider, "openai")
 }
 
 const BUILTIN_MODELS: &[BuiltinModel] = &[
@@ -364,6 +398,14 @@ pub struct ModelInfo {
     pub description: String,
     pub is_default: bool,
     pub aliases: Vec<String>,
+    /// Whether the model supports tool/function calling.
+    pub supports_tools: bool,
+    /// Whether the model supports structured output schemas.
+    pub supports_schemas: bool,
+    /// Whether the model supports async execution.
+    pub supports_async: bool,
+    /// Whether the model has stored default options.
+    pub has_options: bool,
 }
 
 /// Returns a static string identifying the core crate version.
@@ -373,6 +415,8 @@ pub fn core_version() -> &'static str {
 
 /// Configuration options for prompt execution.
 pub struct PromptConfig<'a> {
+    /// Override database path for logging.
+    pub database_path: Option<&'a str>,
     /// Override model identifier (falls back to env/Default).
     pub model: Option<&'a str>,
     /// Sampling temperature override.
@@ -398,6 +442,7 @@ pub struct PromptConfig<'a> {
 impl Default for PromptConfig<'_> {
     fn default() -> Self {
         PromptConfig {
+            database_path: None,
             model: None,
             temperature: None,
             max_tokens: None,
@@ -457,6 +502,11 @@ pub fn execute_prompt_with_messages(
             attachments,
             temperature: None,
             max_tokens: None,
+            tools: None,
+            functions: None,
+            tool_choice: None,
+            response_format: None,
+            schema: None,
         };
         apply_prompt_overrides(&mut request, &config);
         log_prompt_result(&request, &stub, Duration::from_millis(0), &config)?;
@@ -483,6 +533,11 @@ pub fn stream_prompt_with_messages(
             attachments,
             temperature: None,
             max_tokens: None,
+            tools: None,
+            functions: None,
+            tool_choice: None,
+            response_format: None,
+            schema: None,
         };
         apply_prompt_overrides(&mut request, &config);
         log_prompt_result(&request, &stub, Duration::from_millis(0), &config)?;
@@ -565,6 +620,11 @@ fn build_prompt_request_from_messages(
         attachments,
         temperature: None,
         max_tokens: None,
+            tools: None,
+            functions: None,
+            tool_choice: None,
+            response_format: None,
+            schema: None,
     };
     apply_prompt_overrides(&mut request, config);
     Ok(request)
@@ -759,8 +819,14 @@ fn log_prompt_result(
         input_tokens: None,
         output_tokens: None,
         token_details: None,
+        tool_calls_json: None,
+        tool_results_json: None,
+        finish_reason: None,
+        usage_json: None,
+        schema_id: None,
     };
-    logs::record_log_entry(record, force_logging)?;
+    let db_path = config.database_path.map(Path::new);
+    logs::record_log_entry(record, force_logging, db_path)?;
     Ok(())
 }
 
@@ -777,7 +843,7 @@ fn extract_prompt_and_system(request: &PromptRequest) -> (Option<String>, Option
                     first_system = Some(message.content.clone());
                 }
             }
-            MessageRole::Assistant => {}
+            MessageRole::Assistant | MessageRole::Tool | MessageRole::Function => {}
         }
     }
     (last_user, first_system)
@@ -961,6 +1027,9 @@ pub fn available_models() -> Result<Vec<ModelInfo>> {
             .ok()
             .map(|s| normalize_model_name(&s))
     });
+    // Load stored model options to check which models have options configured
+    let stored_options = model_options::load_model_options().unwrap_or_default();
+    
     let mut models: Vec<ModelInfo> = BUILTIN_MODELS
         .iter()
         .map(|model| ModelInfo {
@@ -973,27 +1042,73 @@ pub fn available_models() -> Result<Vec<ModelInfo>> {
                 .iter()
                 .map(|alias| alias.to_string())
                 .collect(),
+            supports_tools: provider_supports_tools(model.provider),
+            supports_schemas: provider_supports_schemas(model.provider),
+            supports_async: provider_supports_async(model.provider),
+            has_options: stored_options.contains_key(model.canonical),
         })
         .collect();
-    if let Some(default_name) = default {
+    if let Some(ref default_name) = default {
         if !models.iter().any(|m| m.is_default) {
-            let provider = provider_from_model(&default_name).to_string();
+            let provider = provider_from_model(default_name).to_string();
             models.push(ModelInfo {
-                name: default_name,
+                name: default_name.clone(),
                 provider: provider.clone(),
                 description: format!("Custom model for provider '{provider}'"),
                 is_default: true,
                 aliases: Vec::new(),
+                supports_tools: provider_supports_tools(&provider),
+                supports_schemas: provider_supports_schemas(&provider),
+                supports_async: provider_supports_async(&provider),
+                has_options: stored_options.contains_key(default_name),
             });
         } else {
             for model in &mut models {
-                model.is_default = model.name == default_name;
+                model.is_default = model.name == *default_name;
             }
         }
     } else if let Some(first) = models.first_mut() {
         first.is_default = true;
     }
     Ok(models)
+}
+
+/// Query models by search terms, returning matches sorted by name length (shortest first).
+///
+/// This implements upstream `--query` behavior: when the user provides query terms
+/// instead of a specific model name, we find all models whose name, description, 
+/// or aliases contain any of the query terms (case-insensitive), then return 
+/// them sorted by name length so the shortest/simplest match is first.
+pub fn query_models(query: &str) -> Result<Vec<ModelInfo>> {
+    let models = available_models()?;
+    let query_lower = query.to_ascii_lowercase();
+    let terms: Vec<&str> = query_lower.split_whitespace().collect();
+    
+    if terms.is_empty() {
+        return Ok(models);
+    }
+    
+    let mut matches: Vec<ModelInfo> = models
+        .into_iter()
+        .filter(|model| {
+            let name_lower = model.name.to_ascii_lowercase();
+            let desc_lower = model.description.to_ascii_lowercase();
+            let aliases_lower: Vec<String> = model.aliases
+                .iter()
+                .map(|a| a.to_ascii_lowercase())
+                .collect();
+            
+            terms.iter().any(|term| {
+                name_lower.contains(term) 
+                    || desc_lower.contains(term)
+                    || aliases_lower.iter().any(|a| a.contains(term))
+            })
+        })
+        .collect();
+    
+    // Sort by name length (shortest first) for upstream parity
+    matches.sort_by_key(|m| m.name.len());
+    Ok(matches)
 }
 
 /// Persist the default model selection to disk.
@@ -1008,12 +1123,26 @@ pub fn set_default_model(name: &str) -> Result<()> {
 }
 
 /// Load the current default model if one has been configured.
+///
+/// Uses `default_model.txt` with fallback to legacy `default-model.txt`.
 pub fn get_default_model() -> Result<Option<String>> {
     let path = default_model_path()?;
-    if !path.exists() {
+    let legacy_path = legacy_default_model_path()?;
+    
+    // Try new path first, then fallback to legacy
+    let read_path = if path.exists() {
+        Some(path)
+    } else if legacy_path.exists() {
+        Some(legacy_path)
+    } else {
+        None
+    };
+    
+    let Some(file_path) = read_path else {
         return Ok(None);
-    }
-    let contents = fs::read_to_string(path).context("failed to read default model")?;
+    };
+    
+    let contents = fs::read_to_string(&file_path).context("failed to read default model")?;
     let trimmed = contents.trim();
     if trimmed.is_empty() {
         Ok(None)
@@ -1022,18 +1151,36 @@ pub fn get_default_model() -> Result<Option<String>> {
     }
 }
 
-fn default_model_path() -> Result<PathBuf> {
+/// Return the path to `default_model.txt` within the user directory.
+pub fn default_model_path() -> Result<PathBuf> {
+    let mut path = user_dir()?;
+    path.push("default_model.txt");
+    Ok(path)
+}
+
+/// Return the legacy path to `default-model.txt` for fallback reading.
+fn legacy_default_model_path() -> Result<PathBuf> {
     let mut path = user_dir()?;
     path.push("default-model.txt");
     Ok(path)
 }
 
-pub(crate) fn normalize_model_name(name: &str) -> String {
+/// Normalize a model name by resolving built-in aliases, user-defined aliases,
+/// and provider prefixes.
+///
+/// Resolution order:
+/// 1. Check for built-in canonical match
+/// 2. Check for built-in alias match
+/// 3. Check for user-defined alias in aliases.json
+/// 4. Handle provider/model format
+/// 5. Return as-is if no match
+pub fn normalize_model_name(name: &str) -> String {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return String::new();
     }
 
+    // 1. Check built-in aliases first
     if let Some(canonical) = canonical_for(trimmed) {
         return canonical.to_string();
     }
@@ -1043,6 +1190,16 @@ pub(crate) fn normalize_model_name(name: &str) -> String {
         return canonical.to_string();
     }
 
+    // 2. Check user-defined aliases
+    if let Ok(Some(target)) = aliases::resolve_user_alias(trimmed) {
+        // Recursively normalize the target (in case it's also an alias)
+        return normalize_model_name(&target);
+    }
+    if let Ok(Some(target)) = aliases::resolve_user_alias(&replaced) {
+        return normalize_model_name(&target);
+    }
+
+    // 3. Handle provider/model format
     if let Some((provider, model)) = replaced.split_once('/') {
         let provider = provider.trim();
         let model = model.trim();
@@ -1056,6 +1213,7 @@ pub(crate) fn normalize_model_name(name: &str) -> String {
         return candidate;
     }
 
+    // 4. Try with openai prefix
     if let Some(canonical) = canonical_for(&format!("openai/{}", replaced)) {
         canonical.to_string()
     } else {
@@ -1145,6 +1303,13 @@ pub fn logs_db_path() -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Return the path to `embeddings.db` within the user directory.
+pub fn embeddings_db_path() -> Result<PathBuf> {
+    let mut path = user_dir()?;
+    path.push("embeddings.db");
+    Ok(path)
+}
+
 /// Load keys from `keys.json`, returning an empty map if the file is missing.
 pub fn load_keys() -> Result<HashMap<String, String>> {
     let path = keys_path()?;
@@ -1225,18 +1390,26 @@ pub fn resolve_key(query: KeyQuery<'_>) -> Result<Option<String>> {
 }
 
 #[cfg(test)]
+pub(crate) fn test_env_lock() -> &'static std::sync::Mutex<()> {
+    use std::sync::{Mutex, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
 
     fn temp_user_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp dir")
     }
 
     fn with_env_lock<F: FnOnce()>(f: F) {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        let guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let guard = crate::test_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         f();
         drop(guard);
     }
@@ -1398,4 +1571,146 @@ mod tests {
             env::remove_var("LLM_USER_PATH");
         });
     }
+    #[test]
+    fn normalize_model_name_resolves_user_alias() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            // Set up a user-defined alias
+            crate::aliases::set_alias("myfast", "openai/gpt-4o-mini").expect("set alias");
+
+            // The alias should resolve through normalize_model_name
+            let resolved = normalize_model_name("myfast");
+            assert_eq!(resolved, "openai/gpt-4o-mini");
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
+    fn normalize_model_name_user_alias_to_builtin() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            // User alias that points to a built-in alias
+            crate::aliases::set_alias("smart", "4o").expect("set alias");
+
+            // Should recursively resolve to canonical
+            let resolved = normalize_model_name("smart");
+            assert_eq!(resolved, "openai/gpt-4o");
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
+    fn normalize_model_name_builtin_takes_precedence() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            // Try to override a built-in alias (shouldn't work - built-ins checked first)
+            crate::aliases::set_alias("4o", "anthropic/claude-3-opus").expect("set alias");
+
+            // Built-in should win
+            let resolved = normalize_model_name("4o");
+            assert_eq!(resolved, "openai/gpt-4o");
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
+    fn default_model_fallback_to_legacy() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            // Write to legacy path only
+            let legacy_path = tmp.path().join("default-model.txt");
+            fs::write(&legacy_path, "openai/gpt-4").expect("write legacy");
+
+            // Should read from legacy
+            let default = get_default_model().expect("get default").unwrap();
+            assert_eq!(default, "openai/gpt-4");
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
+    fn default_model_new_path_takes_precedence() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            // Write to both paths
+            let new_path = tmp.path().join("default_model.txt");
+            let legacy_path = tmp.path().join("default-model.txt");
+            fs::write(&new_path, "openai/gpt-4o").expect("write new");
+            fs::write(&legacy_path, "openai/gpt-3.5-turbo").expect("write legacy");
+
+            // New path should win
+            let default = get_default_model().expect("get default").unwrap();
+            assert_eq!(default, "openai/gpt-4o");
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
+    fn set_default_model_writes_to_new_path() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            set_default_model("openai/gpt-4o").expect("set default");
+
+            // Should be written to new path
+            let new_path = tmp.path().join("default_model.txt");
+            assert!(new_path.exists());
+
+            let contents = fs::read_to_string(&new_path).expect("read");
+            assert_eq!(contents.trim(), "openai/gpt-4o");
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
+    fn user_alias_with_colon_syntax() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            // Alias using colon syntax target
+            crate::aliases::set_alias("custom", "anthropic:claude-3-opus").expect("set alias");
+
+            // Should resolve and normalize
+            let resolved = normalize_model_name("custom");
+            assert_eq!(resolved, "anthropic/claude-3-opus-latest");
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
+    fn chained_user_aliases() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            // Chain: a -> b -> gpt-4o
+            crate::aliases::set_alias("b", "4o").expect("set alias b");
+            crate::aliases::set_alias("a", "b").expect("set alias a");
+
+            let resolved = normalize_model_name("a");
+            assert_eq!(resolved, "openai/gpt-4o");
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
 }
+
