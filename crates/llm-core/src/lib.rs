@@ -276,6 +276,18 @@ const BUILTIN_MODELS: &[BuiltinModel] = &[
         aliases: &["gpt-5-nano-2025-08-07"],
     },
     BuiltinModel {
+        canonical: "openai/gpt-5.2-2025-12-11",
+        provider: "openai",
+        description: "GPT-5.2 (2025-12-11)",
+        aliases: &["gpt-5.2-2025-12-11", "gpt-5.2"],
+    },
+    BuiltinModel {
+        canonical: "openai/gpt-5.3-codex",
+        provider: "openai",
+        description: "GPT-5.3 Codex",
+        aliases: &["gpt-5.3-codex"],
+    },
+    BuiltinModel {
         canonical: "openai/gpt-3.5-turbo-instruct",
         provider: "openai",
         description: "GPT-3.5 Turbo instruct",
@@ -376,6 +388,18 @@ const BUILTIN_MODELS: &[BuiltinModel] = &[
         provider: "anthropic",
         description: "Claude 4.5 Sonnet",
         aliases: &["claude-sonnet-4.5"],
+    },
+    BuiltinModel {
+        canonical: "anthropic/claude-sonnet-4-6",
+        provider: "anthropic",
+        description: "Claude 4.6 Sonnet",
+        aliases: &["claude-sonnet-4.6"],
+    },
+    BuiltinModel {
+        canonical: "anthropic/claude-opus-4-6",
+        provider: "anthropic",
+        description: "Claude 4.6 Opus",
+        aliases: &["claude-opus-4.6"],
     },
     BuiltinModel {
         canonical: "anthropic/claude-haiku-4-5-20251001",
@@ -1436,6 +1460,48 @@ mod tests {
             assert_eq!(default_count, 1);
             let default = models.iter().find(|m| m.is_default).unwrap();
             assert_eq!(default.name, "openai/gpt-4.1-mini");
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
+    fn available_models_include_recent_openai_and_anthropic_releases() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            let models = available_models().expect("models");
+            assert!(models.iter().any(|m| m.name == "openai/gpt-5.2-2025-12-11"));
+            assert!(models.iter().any(|m| m.name == "openai/gpt-5.3-codex"));
+            assert!(models
+                .iter()
+                .any(|m| m.name == "anthropic/claude-sonnet-4-6"));
+            assert!(models.iter().any(|m| m.name == "anthropic/claude-opus-4-6"));
+
+            let sonnet_46 = models
+                .iter()
+                .find(|m| m.name == "anthropic/claude-sonnet-4-6")
+                .expect("sonnet 4.6 present");
+            assert!(sonnet_46.aliases.iter().any(|a| a == "claude-sonnet-4.6"));
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
+    fn set_default_model_accepts_new_release_aliases() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            set_default_model("gpt-5.2").expect("set default gpt-5.2");
+            let stored = get_default_model().expect("stored").unwrap();
+            assert_eq!(stored, "openai/gpt-5.2-2025-12-11");
+
+            set_default_model("claude-opus-4.6").expect("set default claude-opus-4.6");
+            let stored = get_default_model().expect("stored").unwrap();
+            assert_eq!(stored, "anthropic/claude-opus-4-6");
 
             env::remove_var("LLM_USER_PATH");
         });
