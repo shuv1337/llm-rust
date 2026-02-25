@@ -64,3 +64,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Pi/crew local orchestration artifacts
+.pi/
