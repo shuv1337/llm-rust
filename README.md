@@ -23,13 +23,12 @@ This is a Rust port of the Python `llm` CLI tool. It provides:
 - Shell command generation via `cmd` subcommand
 - Logging and usage analytics
 
-### Planned features
+### In progress / next up
 
 - Python plugin bridge for existing plugins
-- Interactive chat interface
-- Embeddings and vector search
-- Templates and fragments for reusable prompts
-- Tool calling and structured outputs
+- Expanded third-party plugin command/model registration parity
+- Broader provider coverage and model-catalog refresh workflows
+- Continued tool-calling and structured-output parity hardening
 
 ## Getting Started
 
@@ -181,12 +180,9 @@ Licensed under Apache 2.0.
 
 ## Status
 
-This is an active rewrite project at approximately 60% feature parity with the Python version. Core functionality is implemented and usable, with advanced features in development.
+The Rust CLI is usable today for core workflows (prompting, chat, models, logs, embeddings, templates, and command generation). Remaining work is focused on plugin bridge parity and long-tail compatibility gaps with upstream Python `llm`.
 
-### Roadmap
+For the most accurate parity status, see:
 
-- Phase 1: Core CLI & Providers (complete)
-- Phase 2: Python Plugin Bridge (in progress)
-- Phase 3: Missing Commands (planned)
-- Phase 4: Templates & Fragments (planned)
-- Phase 5: Advanced Features (planned)
+- `docs/cli-parity-matrix.md`
+- `PLAN-llm-upstream-feature-parity-roadmap.md`

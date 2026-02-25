@@ -144,7 +144,7 @@ You return only: git reset --soft HEAD~1"#;
 #[command(
     name = "llm",
     version,
-    about = "Experimental Rust port of the LLM CLI (keys, plugins, prompts, models)",
+    about = "LLM CLI for prompts, models, plugins, logs, and embeddings",
     disable_version_flag = false
 )]
 struct Cli {
@@ -160,7 +160,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Execute a prompt (placeholder implementation)
+    /// Execute a prompt
     Prompt(PromptArgs),
     /// List plugins detected by the host
     Plugins(PluginsArgs),
@@ -170,7 +170,7 @@ enum Command {
     Keys(KeysArgs),
     /// Manage model aliases
     Aliases(AliasesArgs),
-    /// Manage prompt logs (placeholder)
+    /// Manage prompt logs
     Logs(LogsArgs),
     /// Manage prompt templates
     Templates(TemplatesArgs),
@@ -556,13 +556,13 @@ struct LogsListArgs {
     /// Show entries from the current/most recent conversation
     #[arg(long = "current", conflicts_with = "latest")]
     current: bool,
-    /// Filter to entries that used a specific fragment (placeholder - not yet implemented)
+    /// Filter to entries that used a specific fragment (reserved for compatibility)
     #[arg(long = "fragment", hide = true)]
     fragment: Option<String>,
     /// Filter to entries that made tool calls
     #[arg(long = "tools")]
     with_tools: bool,
-    /// Filter to entries that used a specific schema (placeholder - not yet implemented)
+    /// Filter to entries that used a specific schema (reserved for compatibility)
     #[arg(long = "schema", hide = true)]
     schema: Option<String>,
 }
@@ -628,7 +628,7 @@ enum SchemasSubcommand {
     List(SchemasListArgs),
     /// Show a specific schema by name/ID
     Show(SchemasShowArgs),
-    /// Show schema DSL syntax help (placeholder)
+    /// Show schema DSL syntax help
     Dsl,
 }
 
@@ -1663,7 +1663,7 @@ fn log_prompt_debug(
 }
 
 fn print_version(verbose: bool) {
-    println!("llm-cli {}", env!("CARGO_PKG_VERSION"));
+    println!("llm {}", env!("CARGO_PKG_VERSION"));
     if verbose {
         println!("llm-core {}", core_version());
     }
@@ -1694,7 +1694,7 @@ fn list_plugins(json: bool) -> Result<()> {
         let json = serde_json::to_string_pretty(&names)?;
         println!("{json}");
     } else if plugins.is_empty() {
-        println!("No plugins loaded (stub)");
+        println!("No plugins loaded.");
     } else {
         for plugin in plugins {
             println!("{}", plugin.name);
@@ -1792,7 +1792,7 @@ fn default_model(args: ModelsDefaultArgs) -> Result<()> {
         match get_default_model()? {
             Some(current) => println!("Current default model: {current}"),
             None => println!(
-                "No default model configured. Use `llm-cli models default <model>` to set one."
+                "No default model configured. Use `llm models default <model>` to set one."
             ),
         }
     }
