@@ -28,6 +28,8 @@ Use this file to resume work on the Rust rewrite of `llm` after context resets.
   - `llm-plugin-api` crate with `PluginEntrypoint` + registrar traits
   - feature-gated plugin host in `llm-plugin-host`
   - markov canary plugin wired into CLI (`--model markov`)
+  - plugin-provided embedding execution path wired through `EmbeddingRegistry`
+  - markov embedding canary wired as `--model markov-embed`
 
 ## Quick Start Commands
 ```bash
@@ -42,6 +44,7 @@ LLM_PROMPT_STUB=1 cargo run -- --no-stream "hello"
 
 # markov plugin smoke test (no API key required)
 cargo run -- --model markov --no-stream "the quick brown fox jumps over the lazy dog"
+cargo run -- embed --model markov-embed --json "the quick brown fox"
 
 # key + logs helpers
 cargo run -- keys list --json
@@ -65,7 +68,6 @@ cargo run -- plugins --json
 
 ## Immediate Priorities
 1. **M3 hook parity completion**
-   - embedding provider execution path for plugin-provided embeddings
    - tool invocation + DB logging integration for plugin tools
 2. **M4 canaries**
    - hand-convert `llm-cmd`

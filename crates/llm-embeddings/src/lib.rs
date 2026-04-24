@@ -62,9 +62,9 @@ pub use migrations::{
 };
 #[allow(deprecated)]
 pub use provider::{
-    list_embedding_models, resolve_embedding_model, EmbeddingConfig, EmbeddingModelInfo,
-    EmbeddingProvider, EmbeddingResult, OpenAIEmbeddingConfig, OpenAIEmbeddingProvider,
-    BUILTIN_OPENAI_MODELS,
+    create_embedding_provider, list_embedding_models, resolve_embedding_model,
+    resolve_embedding_model_id, EmbeddingConfig, EmbeddingModelInfo, EmbeddingProvider,
+    EmbeddingResult, OpenAIEmbeddingConfig, OpenAIEmbeddingProvider, BUILTIN_OPENAI_MODELS,
 };
 pub use registry::{global_registry, EmbeddingRegistry};
 

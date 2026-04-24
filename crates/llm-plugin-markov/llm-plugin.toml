@@ -1,12 +1,12 @@
 [plugin]
 id = "llm-markov"
 version = "0.1.0"
-description = "Deterministic Markov chain text model"
+description = "Deterministic Markov chain text and embedding model"
 min_host_version = "1.0.0"
 
 [capabilities]
 models = true
-embedding_models = false
+embedding_models = true
 commands = false
 template_loaders = false
 fragment_loaders = false

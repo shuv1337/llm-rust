@@ -129,6 +129,7 @@ fn initialize_plugins() -> Result<PluginHostState> {
 }
 
 fn discover_plugins() -> Vec<Box<dyn PluginEntrypoint>> {
+    #[allow(unused_mut)]
     let mut plugins: Vec<Box<dyn PluginEntrypoint>> = Vec::new();
 
     #[cfg(feature = "plugin-markov")]
@@ -241,6 +242,14 @@ impl EmbeddingRegistrar for HostEmbeddingRegistrar {
         model: llm_plugin_api::EmbeddingModelInfo,
     ) -> llm_plugin_api::PluginResult<()> {
         embedding_registry().register_plugin(model);
+        Ok(())
+    }
+
+    fn register_embedding_provider(
+        &mut self,
+        provider: std::sync::Arc<dyn llm_plugin_api::EmbeddingProvider>,
+    ) -> llm_plugin_api::PluginResult<()> {
+        embedding_registry().register_plugin_provider(provider);
         Ok(())
     }
 }
@@ -398,6 +407,39 @@ mod tests {
         }
     }
 
+    struct HookEmbeddingProvider {
+        model_id: String,
+    }
+
+    impl llm_plugin_api::EmbeddingProvider for HookEmbeddingProvider {
+        fn id(&self) -> &'static str {
+            "hook"
+        }
+
+        fn model_id(&self) -> &str {
+            &self.model_id
+        }
+
+        fn model_info(&self) -> llm_plugin_api::EmbeddingModelInfo {
+            llm_plugin_api::EmbeddingModelInfo {
+                model_id: self.model_id.clone(),
+                name: "Hook Embedding".to_string(),
+                provider: "hook".to_string(),
+                dimensions: Some(8),
+                supports_binary: false,
+                supports_text: true,
+                aliases: vec![],
+            }
+        }
+
+        fn embed(&self, text: &str) -> Result<llm_embeddings::EmbeddingResult> {
+            Ok(llm_embeddings::EmbeddingResult {
+                embedding: vec![text.len() as f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                tokens: Some(text.split_whitespace().count() as u32),
+            })
+        }
+    }
+
     struct HookTemplateLoader {
         prefix: String,
     }
@@ -503,15 +545,9 @@ mod tests {
             &self,
             reg: &mut dyn EmbeddingRegistrar,
         ) -> llm_plugin_api::PluginResult<()> {
-            reg.register_embedding_model(llm_plugin_api::EmbeddingModelInfo {
+            reg.register_embedding_provider(Arc::new(HookEmbeddingProvider {
                 model_id: self.embedding_model_id.clone(),
-                name: "Hook Embedding".to_string(),
-                provider: "hook".to_string(),
-                dimensions: Some(8),
-                supports_binary: false,
-                supports_text: true,
-                aliases: vec![],
-            })
+            }))
         }
 
         fn register_template_loaders(
@@ -638,6 +674,12 @@ mod tests {
             embedding_registry().resolve(&plugin.embedding_model_id),
             Some(plugin.embedding_model_id.clone())
         );
+        let embedding_provider = embedding_registry()
+            .get_plugin_provider(&plugin.embedding_model_id)
+            .expect("resolve plugin embedding provider");
+        let embedding = embedding_provider.embed("hook text").expect("embed");
+        assert_eq!(embedding.embedding.len(), 8);
+        assert_eq!(embedding.tokens, Some(2));
 
         // Template loaders
         let template = template_loader_registry()

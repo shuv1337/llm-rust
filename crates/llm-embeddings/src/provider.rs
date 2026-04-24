@@ -8,6 +8,7 @@ use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -425,6 +426,44 @@ pub fn resolve_embedding_model(name: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// Resolve a model name or alias to its canonical model ID.
+///
+/// Unlike [`resolve_embedding_model`], this returns an owned `String` and
+/// therefore supports plugin-provided model IDs.
+pub fn resolve_embedding_model_id(name: &str) -> Option<String> {
+    crate::registry::global_registry().resolve(name)
+}
+
+/// Create an executable provider for an embedding model.
+///
+/// Builtin OpenAI models are constructed from environment configuration.
+/// Plugin models are returned from the global embedding registry.
+pub fn create_embedding_provider(model_id: &str) -> Result<Arc<dyn EmbeddingProvider>> {
+    let registry = crate::registry::global_registry();
+    let Some(model) = registry.get(model_id) else {
+        return Ok(Arc::new(
+            OpenAIEmbeddingProvider::from_env(model_id).with_context(|| {
+                format!("failed to create OpenAI embedding provider '{model_id}'")
+            })?,
+        ));
+    };
+
+    match model.provider.as_str() {
+        "openai" => Ok(Arc::new(
+            OpenAIEmbeddingProvider::from_env(model_id).with_context(|| {
+                format!("failed to create OpenAI embedding provider '{model_id}'")
+            })?,
+        )),
+        provider => registry.get_plugin_provider(model_id).ok_or_else(|| {
+            anyhow!(
+                "Embedding model '{}' is registered for provider '{}' but no executable provider is available",
+                model_id,
+                provider
+            )
+        }),
+    }
 }
 
 /// List all available embedding models.

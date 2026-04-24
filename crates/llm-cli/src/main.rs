@@ -21,8 +21,8 @@ use llm_core::{
     StreamSink,
 };
 use llm_embeddings::{
-    delete_collection, list_collections, list_embedding_models, resolve_embedding_model,
-    Collection, EmbedItem, EmbeddingProvider, Entry, OpenAIEmbeddingProvider,
+    create_embedding_provider, delete_collection, list_collections, list_embedding_models,
+    resolve_embedding_model_id, Collection, EmbedItem, Entry,
 };
 use llm_plugin_host::{load_plugin_commands, load_plugins};
 use rpassword::prompt_password;
@@ -2563,12 +2563,10 @@ fn handle_embed(args: EmbedArgs) -> Result<()> {
 
     // Resolve embedding model
     let model_name = model.unwrap_or_else(|| "text-embedding-3-small".to_string());
-    let resolved_model = resolve_embedding_model(&model_name)
-        .map(|s| s.to_string())
-        .unwrap_or(model_name);
+    let resolved_model = resolve_embedding_model_id(&model_name).unwrap_or(model_name);
 
     // Create embedding provider
-    let provider = OpenAIEmbeddingProvider::from_env(&resolved_model)
+    let provider = create_embedding_provider(&resolved_model)
         .context("failed to create embedding provider")?;
 
     // Generate embedding
@@ -2706,9 +2704,7 @@ fn embed_models_list(args: EmbedModelsListArgs) -> Result<()> {
 fn embed_models_default(args: EmbedModelsDefaultArgs) -> Result<()> {
     // TODO: persist default embedding model selection in config storage.
     if let Some(model) = args.model {
-        let resolved = resolve_embedding_model(&model)
-            .map(|s| s.to_string())
-            .unwrap_or(model.clone());
+        let resolved = resolve_embedding_model_id(&model).unwrap_or(model.clone());
         println!("Default embedding model would be set to: {}", resolved);
         println!("Note: Persistent default embedding model is not yet implemented.");
     } else {
@@ -2736,12 +2732,10 @@ fn handle_embed_multi(args: EmbedMultiArgs) -> Result<()> {
 
     // Resolve embedding model
     let model_name = model.unwrap_or_else(|| "text-embedding-3-small".to_string());
-    let resolved_model = resolve_embedding_model(&model_name)
-        .map(|s| s.to_string())
-        .unwrap_or(model_name);
+    let resolved_model = resolve_embedding_model_id(&model_name).unwrap_or(model_name);
 
     // Create embedding provider
-    let provider = OpenAIEmbeddingProvider::from_env(&resolved_model)
+    let provider = create_embedding_provider(&resolved_model)
         .context("failed to create embedding provider")?;
 
     // Open collection
@@ -2792,7 +2786,7 @@ fn handle_embed_multi(args: EmbedMultiArgs) -> Result<()> {
 
         // Batch embed
         for chunk in items.chunks(batch_size) {
-            coll.embed_multi(&provider, chunk, store_content)
+            coll.embed_multi(provider.as_ref(), chunk, store_content)
                 .context("failed to embed batch")?;
             total_embedded += chunk.len();
             if !json_output {
@@ -2879,14 +2873,12 @@ fn handle_similar(args: SimilarArgs) -> Result<()> {
 
         // Resolve model (use collection's model if not specified)
         let model_name = model.unwrap_or_else(|| coll.model_id().to_string());
-        let resolved_model = resolve_embedding_model(&model_name)
-            .map(|s| s.to_string())
-            .unwrap_or(model_name);
+        let resolved_model = resolve_embedding_model_id(&model_name).unwrap_or(model_name);
 
-        let provider = OpenAIEmbeddingProvider::from_env(&resolved_model)
+        let provider = create_embedding_provider(&resolved_model)
             .context("failed to create embedding provider")?;
 
-        coll.similar(&provider, &query_text, number)
+        coll.similar(provider.as_ref(), &query_text, number)
             .context("failed to find similar entries")?
     };
 

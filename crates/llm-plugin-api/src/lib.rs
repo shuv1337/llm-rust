@@ -13,7 +13,7 @@ pub use llm_core::providers::{
 };
 pub use llm_core::registry::ProviderFactory;
 pub use llm_core::{Fragment, FragmentLoaderImpl, Template, TemplateLoaderImpl};
-pub use llm_embeddings::{EmbeddingModelInfo, EmbeddingProvider};
+pub use llm_embeddings::{EmbeddingModelInfo, EmbeddingProvider, EmbeddingResult};
 
 /// Result type used across plugin API traits.
 pub type PluginResult<T = ()> = Result<T>;
@@ -110,6 +110,13 @@ pub trait ModelRegistrar {
 /// Registrar used by plugins to contribute embedding models.
 pub trait EmbeddingRegistrar {
     fn register_embedding_model(&mut self, model: EmbeddingModelInfo) -> PluginResult<()>;
+
+    fn register_embedding_provider(
+        &mut self,
+        provider: Arc<dyn EmbeddingProvider>,
+    ) -> PluginResult<()> {
+        self.register_embedding_model(provider.model_info())
+    }
 }
 
 /// Registrar used by plugins to contribute template loaders.

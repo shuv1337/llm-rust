@@ -1961,6 +1961,85 @@ fn embed_accepts_model_option() {
 }
 
 #[test]
+fn embed_accepts_plugin_embedding_model_without_api_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cmd = Command::cargo_bin("llm-cli").expect("binary exists");
+    cmd.args([
+        "embed",
+        "--model",
+        "markov-embed",
+        "--json",
+        "the quick brown fox",
+    ])
+    .env("LLM_USER_PATH", tmp.path())
+    .env_remove("OPENAI_API_KEY")
+    .env_remove("LLM_OPENAI_API_KEY");
+
+    let output = cmd.assert().success();
+    let stdout = String::from_utf8_lossy(&output.get_output().stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+
+    assert_eq!(parsed["model"], "markov-embedding");
+    assert_eq!(parsed["dimensions"], 8);
+    assert_eq!(parsed["tokens"], 4);
+    assert_eq!(parsed["embedding"].as_array().unwrap().len(), 8);
+}
+
+#[test]
+fn embed_multi_and_similar_use_plugin_embedding_model_without_api_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("embeddings.db");
+    let doc_path = tmp.path().join("doc.txt");
+    std::fs::write(&doc_path, "the quick brown fox").unwrap();
+
+    let mut embed_cmd = Command::cargo_bin("llm-cli").expect("binary exists");
+    embed_cmd
+        .args([
+            "embed-multi",
+            "plugin-docs",
+            "--model",
+            "markov-embed",
+            "--files",
+        ])
+        .arg(&doc_path)
+        .args(["--database"])
+        .arg(&db_path)
+        .args(["--json", "--store-content"])
+        .env("LLM_USER_PATH", tmp.path())
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("LLM_OPENAI_API_KEY");
+
+    let embed_output = embed_cmd.assert().success();
+    let embed_stdout = String::from_utf8_lossy(&embed_output.get_output().stdout);
+    let embed_json: serde_json::Value = serde_json::from_str(&embed_stdout).expect("valid JSON");
+    assert_eq!(embed_json["model"], "markov-embedding");
+    assert_eq!(embed_json["embedded"], 1);
+
+    let mut similar_cmd = Command::cargo_bin("llm-cli").expect("binary exists");
+    similar_cmd
+        .args([
+            "similar",
+            "quick fox",
+            "--collection",
+            "plugin-docs",
+            "--model",
+            "markov-embedding",
+            "--database",
+        ])
+        .arg(&db_path)
+        .arg("--json")
+        .env("LLM_USER_PATH", tmp.path())
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("LLM_OPENAI_API_KEY");
+
+    let similar_output = similar_cmd.assert().success();
+    let similar_stdout = String::from_utf8_lossy(&similar_output.get_output().stdout);
+    let similar_json: serde_json::Value =
+        serde_json::from_str(&similar_stdout).expect("valid JSON");
+    assert_eq!(similar_json.as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn similar_requires_collection() {
     let tmp = tempfile::tempdir().unwrap();
     let mut cmd = Command::cargo_bin("llm-cli").expect("binary exists");

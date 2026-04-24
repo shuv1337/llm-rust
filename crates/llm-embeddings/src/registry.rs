@@ -3,9 +3,9 @@
 //! This module implements `EmbeddingRegistry` for dynamic registration of
 //! builtin and plugin embedding models, following the pattern from ADR-001.
 
-use crate::provider::EmbeddingModelInfo;
+use crate::provider::{EmbeddingModelInfo, EmbeddingProvider};
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 /// Registry holding builtin and plugin embedding models with clear resolution order.
 ///
@@ -24,6 +24,8 @@ pub struct EmbeddingRegistry {
     builtin: RwLock<HashMap<String, EmbeddingModelInfo>>,
     /// Plugin-registered embedding models keyed by model ID.
     plugin: RwLock<HashMap<String, EmbeddingModelInfo>>,
+    /// Executable plugin embedding providers keyed by model ID.
+    plugin_providers: RwLock<HashMap<String, Arc<dyn EmbeddingProvider>>>,
     /// Track collision warnings to avoid duplicate messages.
     collision_warnings: RwLock<Vec<String>>,
 }
@@ -40,6 +42,7 @@ impl EmbeddingRegistry {
         Self {
             builtin: RwLock::new(HashMap::new()),
             plugin: RwLock::new(HashMap::new()),
+            plugin_providers: RwLock::new(HashMap::new()),
             collision_warnings: RwLock::new(Vec::new()),
         }
     }
@@ -144,6 +147,20 @@ impl EmbeddingRegistry {
         plugin.insert(model.model_id.clone(), model);
     }
 
+    /// Register an executable plugin-provided embedding provider.
+    ///
+    /// The provider's [`EmbeddingProvider::model_info`] metadata is registered
+    /// alongside the executable provider so list/resolve and runtime execution
+    /// use the same model identifier.
+    pub fn register_plugin_provider(&self, provider: Arc<dyn EmbeddingProvider>) {
+        let model = provider.model_info();
+        let model_id = model.model_id.clone();
+        self.register_plugin(model);
+
+        let mut providers = self.plugin_providers.write().unwrap();
+        providers.insert(model_id, provider);
+    }
+
     /// Resolve a model name to its canonical model ID.
     ///
     /// Checks exact matches first, then aliases. Builtin models take precedence.
@@ -206,6 +223,12 @@ impl EmbeddingRegistry {
         }
 
         None
+    }
+
+    /// Get an executable plugin provider by exact model ID.
+    pub fn get_plugin_provider(&self, model_id: &str) -> Option<Arc<dyn EmbeddingProvider>> {
+        let providers = self.plugin_providers.read().unwrap();
+        providers.get(model_id).cloned()
     }
 
     /// List all registered embedding models (builtin first, then plugin).
@@ -316,6 +339,8 @@ pub fn global_registry() -> &'static EmbeddingRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::EmbeddingResult;
+    use anyhow::Result;
 
     fn test_model(id: &str, aliases: &[&str]) -> EmbeddingModelInfo {
         EmbeddingModelInfo {
@@ -326,6 +351,31 @@ mod tests {
             supports_binary: false,
             supports_text: true,
             aliases: aliases.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    struct TestEmbeddingProvider {
+        model: EmbeddingModelInfo,
+    }
+
+    impl EmbeddingProvider for TestEmbeddingProvider {
+        fn id(&self) -> &'static str {
+            "test"
+        }
+
+        fn model_id(&self) -> &str {
+            &self.model.model_id
+        }
+
+        fn model_info(&self) -> EmbeddingModelInfo {
+            self.model.clone()
+        }
+
+        fn embed(&self, text: &str) -> Result<EmbeddingResult> {
+            Ok(EmbeddingResult {
+                embedding: vec![text.len() as f32],
+                tokens: None,
+            })
         }
     }
 
@@ -522,6 +572,24 @@ mod tests {
             Some("custom-embed".to_string())
         );
         assert_eq!(registry.resolve("custom"), Some("custom-embed".to_string()));
+    }
+
+    #[test]
+    fn test_plugin_provider_registration_supports_execution() {
+        let registry = EmbeddingRegistry::new();
+        registry.register_plugin_provider(Arc::new(TestEmbeddingProvider {
+            model: test_model("custom-exec-embed", &["custom-exec"]),
+        }));
+
+        assert_eq!(
+            registry.resolve("custom-exec"),
+            Some("custom-exec-embed".to_string())
+        );
+        let provider = registry
+            .get_plugin_provider("custom-exec-embed")
+            .expect("registered provider");
+        let result = provider.embed("abcd").expect("embed");
+        assert_eq!(result.embedding, vec![4.0]);
     }
 
     #[test]
