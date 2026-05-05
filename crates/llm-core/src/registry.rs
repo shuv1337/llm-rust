@@ -273,10 +273,15 @@ mod tests {
             false
         }
 
-        fn stream(&self, request: PromptRequest, sink: &mut dyn StreamSink) -> Result<()> {
+        fn stream(
+            &self,
+            request: PromptRequest,
+            sink: &mut dyn StreamSink,
+        ) -> Result<PromptCompletion> {
             let completion = self.complete(request)?;
             sink.handle_text_delta(&completion.text)?;
-            sink.handle_done()
+            sink.handle_done()?;
+            Ok(completion)
         }
     }
 

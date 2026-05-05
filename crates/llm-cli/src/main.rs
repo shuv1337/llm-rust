@@ -52,6 +52,15 @@ struct PromptOptions {
     /// Maximum number of tokens to request from the provider
     #[arg(long = "max-tokens")]
     max_tokens: Option<u32>,
+    /// Maximum output tokens to request from providers that distinguish output tokens
+    #[arg(long = "max-output-tokens")]
+    max_output_tokens: Option<u32>,
+    /// Reasoning effort for reasoning models (none, minimal, low, medium, high, xhigh)
+    #[arg(long = "reasoning-effort", value_parser = validate_reasoning_effort)]
+    reasoning_effort: Option<String>,
+    /// Text verbosity for GPT-5.5+ models (low, medium, high)
+    #[arg(long = "verbosity", value_parser = validate_verbosity)]
+    verbosity: Option<String>,
     /// Disable streaming tokens (enabled by default)
     #[arg(long = "no-stream")]
     no_stream: bool,
@@ -138,6 +147,22 @@ fn parse_datetime(raw: &str) -> Result<DateTime<Utc>, String> {
     Err(format!(
         "Unable to parse datetime '{raw}'. Use RFC3339 or YYYY-MM-DD formats."
     ))
+}
+
+fn validate_reasoning_effort(raw: &str) -> Result<String, String> {
+    match raw {
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => Ok(raw.to_string()),
+        _ => Err(
+            "reasoning effort must be one of: none, minimal, low, medium, high, xhigh".to_string(),
+        ),
+    }
+}
+
+fn validate_verbosity(raw: &str) -> Result<String, String> {
+    match raw {
+        "low" | "medium" | "high" => Ok(raw.to_string()),
+        _ => Err("verbosity must be one of: low, medium, high".to_string()),
+    }
 }
 
 const CMD_SYSTEM_PROMPT: &str = r#"Return only the command to be executed as a raw string, no string delimiters
@@ -1132,6 +1157,9 @@ fn run_prompt(input: PromptInputArgs, logging: &LoggingOptions) -> Result<()> {
         model: resolved_model.as_deref(),
         temperature: options.temperature,
         max_tokens: options.max_tokens,
+        max_output_tokens: options.max_output_tokens.or(options.max_tokens),
+        reasoning_effort: options.reasoning_effort.clone(),
+        verbosity: options.verbosity.clone(),
         retries: options.retries.map(|v| v as usize),
         retry_backoff_ms: options.retry_backoff_ms,
         api_key: key.as_deref(),
@@ -1450,6 +1478,9 @@ fn process_chat_input(
         model: options.model.as_deref(),
         temperature: options.temperature,
         max_tokens: options.max_tokens,
+        max_output_tokens: options.max_output_tokens.or(options.max_tokens),
+        reasoning_effort: options.reasoning_effort.clone(),
+        verbosity: options.verbosity.clone(),
         retries: options.retries.map(|v| v as usize),
         retry_backoff_ms: options.retry_backoff_ms,
         api_key: key,
@@ -1549,6 +1580,9 @@ fn run_cmd(args: CmdArgs, logging: &LoggingOptions) -> Result<()> {
         model: args.options.model.as_deref(),
         temperature: args.options.temperature,
         max_tokens: args.options.max_tokens,
+        max_output_tokens: args.options.max_output_tokens.or(args.options.max_tokens),
+        reasoning_effort: args.options.reasoning_effort.clone(),
+        verbosity: args.options.verbosity.clone(),
         retries: args.options.retries.map(|v| v as usize),
         retry_backoff_ms: args.options.retry_backoff_ms,
         api_key: args.key.as_deref(),
@@ -1756,6 +1790,9 @@ fn log_prompt_debug(
             provider = %info.provider,
             temperature = ?info.temperature,
             max_tokens = ?info.max_tokens,
+            max_output_tokens = ?info.max_output_tokens,
+            reasoning_effort = ?info.reasoning_effort,
+            verbosity = ?info.verbosity,
             retries = info.retries,
             retry_backoff_ms = info.retry_backoff_ms,
             streaming,
@@ -2009,6 +2046,21 @@ fn models_options_set(args: ModelsOptionsSetArgs) -> Result<()> {
                 .with_context(|| format!("Invalid max_tokens value: {}", args.value))?;
             opts.max_tokens = Some(value);
         }
+        "max_output_tokens" | "max-output-tokens" => {
+            let value: u32 = args
+                .value
+                .parse()
+                .with_context(|| format!("Invalid max_output_tokens value: {}", args.value))?;
+            opts.max_output_tokens = Some(value);
+        }
+        "reasoning_effort" | "reasoning-effort" => {
+            validate_reasoning_effort(&args.value).map_err(anyhow::Error::msg)?;
+            opts.reasoning_effort = Some(args.value.clone());
+        }
+        "verbosity" => {
+            validate_verbosity(&args.value).map_err(anyhow::Error::msg)?;
+            opts.verbosity = Some(args.value.clone());
+        }
         "top_p" | "top-p" => {
             let value: f32 = args
                 .value
@@ -2047,7 +2099,7 @@ fn models_options_set(args: ModelsOptionsSetArgs) -> Result<()> {
             opts.stop = Some(stops);
         }
         other => {
-            bail!("Unknown option key '{}'. Valid keys: temperature, max_tokens, top_p, frequency_penalty, presence_penalty, system, stop", other);
+            bail!("Unknown option key '{}'. Valid keys: temperature, max_tokens, max_output_tokens, reasoning_effort, verbosity, top_p, frequency_penalty, presence_penalty, system, stop", other);
         }
     }
 
@@ -2075,6 +2127,15 @@ fn print_model_options(opts: &ModelOptions, indent: &str) {
     }
     if let Some(max) = opts.max_tokens {
         println!("{indent}max_tokens: {max}");
+    }
+    if let Some(max) = opts.max_output_tokens {
+        println!("{indent}max_output_tokens: {max}");
+    }
+    if let Some(ref effort) = opts.reasoning_effort {
+        println!("{indent}reasoning_effort: {effort}");
+    }
+    if let Some(ref verbosity) = opts.verbosity {
+        println!("{indent}verbosity: {verbosity}");
     }
     if let Some(top_p) = opts.top_p {
         println!("{indent}top_p: {top_p}");

@@ -20,6 +20,14 @@ pub struct ModelOptions {
     /// Maximum tokens to generate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Maximum output tokens to generate. For OpenAI Responses this is preferred;
+    /// max_tokens remains a legacy alias.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<String>,
     /// Top-p (nucleus) sampling.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
@@ -47,6 +55,9 @@ impl ModelOptions {
     pub fn is_empty(&self) -> bool {
         self.temperature.is_none()
             && self.max_tokens.is_none()
+            && self.max_output_tokens.is_none()
+            && self.reasoning_effort.is_none()
+            && self.verbosity.is_none()
             && self.top_p.is_none()
             && self.frequency_penalty.is_none()
             && self.presence_penalty.is_none()
@@ -61,6 +72,12 @@ impl ModelOptions {
         ModelOptions {
             temperature: other.temperature.or(self.temperature),
             max_tokens: other.max_tokens.or(self.max_tokens),
+            max_output_tokens: other.max_output_tokens.or(self.max_output_tokens),
+            reasoning_effort: other
+                .reasoning_effort
+                .clone()
+                .or_else(|| self.reasoning_effort.clone()),
+            verbosity: other.verbosity.clone().or_else(|| self.verbosity.clone()),
             top_p: other.top_p.or(self.top_p),
             frequency_penalty: other.frequency_penalty.or(self.frequency_penalty),
             presence_penalty: other.presence_penalty.or(self.presence_penalty),
@@ -177,6 +194,7 @@ mod tests {
             presence_penalty: None,
             stop: Some(vec!["END".to_string()]),
             system: Some("You are helpful.".to_string()),
+            ..Default::default()
         };
 
         let cli = ModelOptions {
@@ -187,6 +205,7 @@ mod tests {
             presence_penalty: None,
             stop: None,   // Keep stored
             system: None, // Keep stored
+            ..Default::default()
         };
 
         let merged = stored.merge_with(&cli);

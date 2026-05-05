@@ -400,6 +400,9 @@ pub struct PromptRequest {
     pub attachments: Vec<Attachment>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub reasoning_effort: Option<String>,
+    pub verbosity: Option<String>,
 
     // Tool/function calling support
     /// Tools available for the model to call.
@@ -476,6 +479,9 @@ impl PromptRequest {
             attachments: Vec::new(),
             temperature: None,
             max_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            verbosity: None,
             tools: None,
             functions: None,
             tool_choice: None,
@@ -492,6 +498,9 @@ impl PromptRequest {
             attachments: Vec::new(),
             temperature: None,
             max_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            verbosity: None,
             tools: None,
             functions: None,
             tool_choice: None,
@@ -526,6 +535,11 @@ pub struct PromptCompletion {
     #[allow(dead_code)]
     pub raw_response: Option<String>,
 
+    pub usage_json: Option<String>,
+    pub response_id: Option<String>,
+    pub status: Option<String>,
+    pub incomplete_reason: Option<String>,
+
     /// Token usage information.
     pub usage: Option<UsageInfo>,
 
@@ -545,6 +559,10 @@ impl PromptCompletion {
         Self {
             text: text.into(),
             raw_response: None,
+            usage_json: None,
+            response_id: None,
+            status: None,
+            incomplete_reason: None,
             usage: None,
             tool_calls: None,
             finish_reason: None,
@@ -557,6 +575,10 @@ impl PromptCompletion {
         Self {
             text: text.into(),
             raw_response: None,
+            usage_json: None,
+            response_id: None,
+            status: None,
+            incomplete_reason: None,
             usage: None,
             tool_calls: Some(tool_calls),
             finish_reason: Some(FinishReason::ToolCalls),
@@ -588,10 +610,15 @@ pub trait PromptProvider {
         false
     }
 
-    fn stream(&self, request: PromptRequest, sink: &mut dyn StreamSink) -> Result<()> {
+    fn stream(
+        &self,
+        request: PromptRequest,
+        sink: &mut dyn StreamSink,
+    ) -> Result<PromptCompletion> {
         let completion = self.complete(request)?;
         sink.handle_text_delta(&completion.text)?;
-        sink.handle_done()
+        sink.handle_done()?;
+        Ok(completion)
     }
 }
 
@@ -663,6 +690,10 @@ mod tests {
             Ok(PromptCompletion {
                 text: self.text.clone(),
                 raw_response: None,
+                usage_json: None,
+                response_id: None,
+                status: None,
+                incomplete_reason: None,
                 usage: None,
                 tool_calls: None,
                 finish_reason: None,

@@ -310,14 +310,13 @@ fn models_list_outputs_available_models() {
     let output = cmd.assert().success().get_output().stdout.clone();
     let value: Value = serde_json::from_slice(&output).expect("valid json");
     let array = value.as_array().expect("array");
-    assert!(array.iter().any(|m| m["name"] == "openai/gpt-4o-mini"));
+    assert!(array.iter().any(|m| m["name"] == "openai/gpt-5.5"));
     assert!(array
         .iter()
         .any(|m| m["name"] == "anthropic/claude-opus-4-0"));
     assert!(array
         .iter()
-        .any(|m| m["name"] == "openai/gpt-5.2-2025-12-11"));
-    assert!(array.iter().any(|m| m["name"] == "openai/gpt-5"));
+        .any(|m| m["name"] == "openai/gpt-5.5-2026-04-23"));
     assert!(array
         .iter()
         .any(|m| m["name"] == "anthropic/claude-sonnet-4-6"));
@@ -326,12 +325,12 @@ fn models_list_outputs_available_models() {
         .any(|m| m["name"] == "anthropic/claude-opus-4-6"));
     assert!(array.iter().any(|m| m["name"] == "markov"));
 
-    let gpt4o = array
+    let gpt55 = array
         .iter()
-        .find(|m| m["name"] == "openai/gpt-4o")
-        .expect("gpt-4o present");
-    let aliases = gpt4o["aliases"].as_array().expect("aliases array");
-    assert!(aliases.iter().any(|alias| alias.as_str() == Some("4o")));
+        .find(|m| m["name"] == "openai/gpt-5.5")
+        .expect("gpt-5.5 present");
+    let aliases = gpt55["aliases"].as_array().expect("aliases array");
+    assert!(aliases.iter().any(|alias| alias.as_str() == Some("5.5")));
 }
 
 #[test]
@@ -358,10 +357,10 @@ fn models_default_sets_and_shows_value() {
 fn models_default_accepts_alias() {
     let tmp = tempfile::tempdir().unwrap();
     let mut cmd = Command::cargo_bin("llm-cli").expect("binary exists");
-    cmd.args(["models", "default", "4o"])
+    cmd.args(["models", "default", "5.5"])
         .env("LLM_USER_PATH", tmp.path());
     cmd.assert().success().stdout(predicate::str::contains(
-        "Default model set to openai/gpt-4o.",
+        "Default model set to openai/gpt-5.5.",
     ));
 }
 
@@ -807,7 +806,7 @@ fn keys_set_writes_value() {
 fn prompt_query_selects_shortest_matching_model() {
     let tmp = tempfile::tempdir().unwrap();
     let mut cmd = Command::cargo_bin("llm-cli").expect("binary exists");
-    cmd.args(["--query", "gpt-4o", "--no-stream", "test query"])
+    cmd.args(["--query", "gpt-5.5", "--no-stream", "test query"])
         .env("LLM_PROMPT_STUB", "1")
         .env("LLM_USER_PATH", tmp.path());
     cmd.assert().success().stdout(predicate::str::contains(

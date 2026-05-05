@@ -111,8 +111,7 @@ static MIGRATIONS: &[Migration] = &[
         name: "001_llm_migrations_table",
         sql: r#"
             CREATE TABLE IF NOT EXISTS _llm_migrations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
+                name TEXT PRIMARY KEY,
                 applied_at TEXT NOT NULL
             );
         "#,
@@ -431,13 +430,19 @@ pub fn migration_preflight<P: AsRef<Path>>(db_path: P) -> Result<PreflightReport
 
     let pending: Vec<String> = MIGRATIONS
         .iter()
-        .filter(|m| !applied_names.contains(m.name))
+        .filter(|m| {
+            !applied_names.contains(m.name)
+                && !migration_schema_satisfied(&conn, m).unwrap_or(false)
+        })
         .map(|m| m.name.to_string())
         .collect();
 
     let has_schema_changes = MIGRATIONS
         .iter()
-        .filter(|m| !applied_names.contains(m.name))
+        .filter(|m| {
+            !applied_names.contains(m.name)
+                && !migration_schema_satisfied(&conn, m).unwrap_or(false)
+        })
         .any(|m| m.is_schema_change);
 
     let backup_path = if has_schema_changes && !pending.is_empty() {
@@ -499,7 +504,10 @@ pub fn list_pending_migrations<P: AsRef<Path>>(db_path: P) -> Result<Vec<&'stati
 
     let pending: Vec<&'static Migration> = MIGRATIONS
         .iter()
-        .filter(|m| !applied_names.contains(m.name))
+        .filter(|m| {
+            !applied_names.contains(m.name)
+                && !migration_schema_satisfied(&conn, m).unwrap_or(false)
+        })
         .collect();
 
     Ok(pending)
@@ -538,13 +546,19 @@ pub fn apply_migration<P: AsRef<Path>>(db_path: P, migration: &Migration) -> Res
     ensure_migrations_table(&conn)?;
 
     // Check if already applied
-    if is_migration_applied(&conn, migration.name)? {
+    if is_migration_applied(&conn, migration.name)?
+        || (migration.name != "001_llm_migrations_table"
+            && migration_schema_satisfied(&conn, migration)?)
+    {
         return Ok(false);
     }
 
     // Special handling for ULID migration (Rust-based)
     if migration.name == "010_responses_ulid_ids" {
         return apply_ulid_migration(&conn, migration);
+    }
+    if migration.name == "009_responses_rust_extensions" {
+        return apply_rust_extensions_migration(&conn, migration);
     }
 
     // Apply the migration in a transaction
@@ -1087,8 +1101,7 @@ fn ensure_migrations_table(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS _llm_migrations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
+                name TEXT PRIMARY KEY,
                 applied_at TEXT NOT NULL
             );
             ",
@@ -1101,7 +1114,7 @@ fn ensure_migrations_table(conn: &Connection) -> Result<()> {
 
 fn list_applied_migrations_internal(conn: &Connection) -> Result<Vec<AppliedMigration>> {
     let mut stmt = conn
-        .prepare("SELECT name, applied_at FROM _llm_migrations ORDER BY id ASC")
+        .prepare("SELECT name, applied_at FROM _llm_migrations ORDER BY applied_at ASC, name ASC")
         .context("Failed to prepare migration query")?;
 
     let rows = stmt.query_map([], |row| {
@@ -1129,6 +1142,117 @@ fn is_migration_applied(conn: &Connection, name: &str) -> Result<bool> {
         .unwrap_or(0);
 
     Ok(count > 0)
+}
+
+fn migration_schema_satisfied(conn: &Connection, migration: &Migration) -> Result<bool> {
+    let satisfied = match migration.name {
+        "001_llm_migrations_table" => false,
+        "002_conversations_table" => table_exists(conn, "conversations")?,
+        "003_responses_table" => {
+            table_exists(conn, "responses")?
+                && column_exists(conn, "responses", "id")?
+                && column_exists(conn, "responses", "model")?
+                && column_exists(conn, "responses", "prompt")?
+                && column_exists(conn, "responses", "response")?
+        }
+        "004_responses_fts" => table_exists(conn, "responses_fts")?,
+        "005_attachments_tables" => {
+            table_exists(conn, "attachments")? && table_exists(conn, "prompt_attachments")?
+        }
+        "006_schemas_table" => {
+            table_exists(conn, "schemas")? && column_exists(conn, "responses", "schema_id")?
+        }
+        "007_fragments_tables" => {
+            table_exists(conn, "fragments")?
+                && table_exists(conn, "fragment_aliases")?
+                && table_exists(conn, "prompt_fragments")?
+                && table_exists(conn, "system_fragments")?
+        }
+        "008_tools_tables" => {
+            table_exists(conn, "tools")?
+                && table_exists(conn, "tool_responses")?
+                && table_exists(conn, "tool_calls")?
+                && table_exists(conn, "tool_instances")?
+                && table_exists(conn, "tool_results")?
+                && table_exists(conn, "tool_results_attachments")?
+        }
+        "009_responses_rust_extensions" => {
+            column_exists(conn, "responses", "tool_calls_json")?
+                && column_exists(conn, "responses", "tool_results_json")?
+                && column_exists(conn, "responses", "finish_reason")?
+                && column_exists(conn, "responses", "usage_json")?
+        }
+        "010_responses_ulid_ids" => column_decl_type(conn, "responses", "id")?
+            .map(|decl_type| decl_type.eq_ignore_ascii_case("TEXT"))
+            .unwrap_or(false),
+        _ => false,
+    };
+    Ok(satisfied)
+}
+
+fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    let exists = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?1",
+        params![name],
+        |row| row.get(0),
+    )?;
+    Ok(exists)
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    Ok(column_decl_type(conn, table, column)?.is_some())
+}
+
+fn column_decl_type(conn: &Connection, table: &str, column: &str) -> Result<Option<String>> {
+    let escaped_table = table.replace('\'', "''");
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info('{escaped_table}')"))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+    })?;
+
+    for row in rows {
+        let (name, decl_type) = row?;
+        if name == column {
+            return Ok(Some(decl_type));
+        }
+    }
+    Ok(None)
+}
+
+fn apply_rust_extensions_migration(conn: &Connection, migration: &Migration) -> Result<bool> {
+    conn.execute_batch("BEGIN TRANSACTION;")?;
+
+    let result = (|| -> Result<()> {
+        for column in [
+            "tool_calls_json",
+            "tool_results_json",
+            "finish_reason",
+            "usage_json",
+        ] {
+            if !column_exists(conn, "responses", column)? {
+                conn.execute_batch(&format!("ALTER TABLE responses ADD COLUMN {column} TEXT;"))?;
+            }
+        }
+
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO _llm_migrations (name, applied_at) VALUES (?1, ?2)",
+            params![migration.name, now],
+        )
+        .context("Failed to record migration")?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(_) => {
+            conn.execute_batch("COMMIT;")?;
+            Ok(true)
+        }
+        Err(e) => {
+            conn.execute_batch("ROLLBACK;").ok();
+            Err(e).with_context(|| format!("Failed to apply migration '{}'", migration.name))
+        }
+    }
 }
 
 fn generate_backup_path(db_path: &Path) -> Result<PathBuf> {

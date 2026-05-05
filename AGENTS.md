@@ -15,6 +15,7 @@ Use this file to resume work on the Rust rewrite of `llm` after context resets.
   - `aliases path/list/set/remove`
   - `logs path/status/on/off/backup/list` (+ filters)
   - `prompt` with streaming + system prompt + key override + attachments + conversation metadata
+  - OpenAI prompt provider uses Responses API for `openai/gpt-5.5` and newer catalog defaults
   - continuation migration (`-c` / `--continue` / `--cid` rewrite path)
   - `models list/default/options`
   - templates + template loaders
@@ -62,6 +63,7 @@ cargo run -- plugins --json
   - override: `LLM_USER_PATH=/path`
 - Keys are stored in `keys.json` with the Python-compatible warning note entry.
 - Default model file writes to `default_model.txt` and still reads legacy `default-model.txt` fallback.
+- Built-in OpenAI prompt default is `openai/gpt-5.5`; `openai-compatible/*` remains on Chat Completions.
 - Logs DB migration alignment is in progress:
   - `_llm_migrations` metadata table present
   - response IDs migrated to ULID strings

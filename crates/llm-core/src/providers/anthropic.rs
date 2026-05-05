@@ -219,6 +219,17 @@ impl PromptProvider for AnthropicProvider {
         Ok(PromptCompletion {
             text: response.primary_text().unwrap_or("").to_string(),
             raw_response: response.raw_body,
+            usage_json: response.usage.as_ref().map(|usage| {
+                serde_json::json!({
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cache_read_input_tokens": usage.cache_read_input_tokens,
+                })
+                .to_string()
+            }),
+            response_id: None,
+            status: None,
+            incomplete_reason: None,
             usage,
             tool_calls: if has_tool_calls {
                 Some(tool_calls)
@@ -230,7 +241,11 @@ impl PromptProvider for AnthropicProvider {
         })
     }
 
-    fn stream(&self, request: PromptRequest, sink: &mut dyn StreamSink) -> Result<()> {
+    fn stream(
+        &self,
+        request: PromptRequest,
+        sink: &mut dyn StreamSink,
+    ) -> Result<PromptCompletion> {
         let response = self.request(AnthropicRequest::from_prompt(request)?, true)?;
         let status = response.status();
         if !status.is_success() {
@@ -282,7 +297,7 @@ impl PromptProvider for AnthropicProvider {
             }
         }
 
-        Ok(())
+        Ok(PromptCompletion::text(""))
     }
 }
 
@@ -873,6 +888,9 @@ mod tests {
             )],
             temperature: None,
             max_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            verbosity: None,
             tools: None,
             functions: None,
             tool_choice: None,
@@ -911,6 +929,9 @@ mod tests {
             )],
             temperature: None,
             max_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            verbosity: None,
             tools: None,
             functions: None,
             tool_choice: None,
@@ -942,6 +963,9 @@ mod tests {
             attachments: vec![],
             temperature: None,
             max_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            verbosity: None,
             tools: Some(tools),
             functions: None,
             tool_choice: None,
@@ -975,6 +999,9 @@ mod tests {
             attachments: vec![],
             temperature: None,
             max_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            verbosity: None,
             tools: Some(tools),
             functions: None,
             tool_choice: Some(ToolChoice::auto()),
@@ -1001,6 +1028,9 @@ mod tests {
             attachments: vec![],
             temperature: None,
             max_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            verbosity: None,
             tools: Some(tools),
             functions: None,
             tool_choice: Some(ToolChoice::specific("get_weather")),
@@ -1105,6 +1135,9 @@ mod tests {
             attachments: vec![],
             temperature: None,
             max_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            verbosity: None,
             tools: None,
             functions: None,
             tool_choice: None,

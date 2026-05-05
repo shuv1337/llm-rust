@@ -6,7 +6,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use directories::ProjectDirs;
 use providers::anthropic::{AnthropicConfig, AnthropicProvider};
-use providers::openai::{OpenAIConfig, OpenAIProvider};
+use providers::openai::{OpenAIApiKind, OpenAIConfig, OpenAIProvider};
 use providers::StreamSink as ProviderStreamSink;
 use providers::{PromptProvider, PromptRequest, VecStreamSink};
 use serde::{Deserialize, Serialize};
@@ -81,148 +81,16 @@ fn provider_supports_async(provider: &str) -> bool {
 
 const BUILTIN_MODELS: &[BuiltinModel] = &[
     BuiltinModel {
-        canonical: "openai/gpt-4o-mini",
+        canonical: "openai/gpt-5.5",
         provider: "openai",
-        description: "GPT-4o mini",
-        aliases: &["gpt-4o-mini", "4o-mini"],
+        description: "GPT-5.5",
+        aliases: &["gpt-5.5", "5.5"],
     },
     BuiltinModel {
-        canonical: "openai/gpt-4o",
+        canonical: "openai/gpt-5.5-2026-04-23",
         provider: "openai",
-        description: "GPT-4o general-purpose",
-        aliases: &["gpt-4o", "4o"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4.1",
-        provider: "openai",
-        description: "GPT-4.1 flagship",
-        aliases: &["gpt-4.1", "4.1"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4.1-mini",
-        provider: "openai",
-        description: "GPT-4.1 mini",
-        aliases: &["gpt-4.1-mini", "4.1-mini"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4.1-nano",
-        provider: "openai",
-        description: "GPT-4.1 nano",
-        aliases: &["gpt-4.1-nano", "4.1-nano"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-3.5-turbo",
-        provider: "openai",
-        description: "GPT-3.5 Turbo",
-        aliases: &["gpt-3.5-turbo", "3.5", "chatgpt"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-3.5-turbo-16k",
-        provider: "openai",
-        description: "GPT-3.5 Turbo 16k",
-        aliases: &["gpt-3.5-turbo-16k", "chatgpt-16k", "3.5-16k"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4",
-        provider: "openai",
-        description: "GPT-4",
-        aliases: &["gpt-4", "4", "gpt4"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4-1106-preview",
-        provider: "openai",
-        description: "GPT-4 1106 preview",
-        aliases: &["gpt-4-1106-preview"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4-0125-preview",
-        provider: "openai",
-        description: "GPT-4 0125 preview",
-        aliases: &["gpt-4-0125-preview"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4-turbo-2024-04-09",
-        provider: "openai",
-        description: "GPT-4 Turbo (2024-04-09)",
-        aliases: &["gpt-4-turbo-2024-04-09"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-4-turbo",
-        provider: "openai",
-        description: "GPT-4 Turbo",
-        aliases: &["gpt-4-turbo", "gpt-4-turbo-preview", "4-turbo", "4t"],
-    },
-    BuiltinModel {
-        canonical: "openai/o1",
-        provider: "openai",
-        description: "o1 reasoning",
-        aliases: &["o1"],
-    },
-    BuiltinModel {
-        canonical: "openai/o1-2024-12-17",
-        provider: "openai",
-        description: "o1 (2024-12-17)",
-        aliases: &["o1-2024-12-17"],
-    },
-    BuiltinModel {
-        canonical: "openai/o3",
-        provider: "openai",
-        description: "o3 reasoning",
-        aliases: &["o3"],
-    },
-    BuiltinModel {
-        canonical: "openai/o3-mini",
-        provider: "openai",
-        description: "o3 mini",
-        aliases: &["o3-mini"],
-    },
-    BuiltinModel {
-        canonical: "openai/o4-mini",
-        provider: "openai",
-        description: "o4 mini reasoning",
-        aliases: &["o4-mini"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-5",
-        provider: "openai",
-        description: "GPT-5",
-        aliases: &["gpt-5"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-5-mini",
-        provider: "openai",
-        description: "GPT-5 mini",
-        aliases: &["gpt-5-mini"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-5-nano",
-        provider: "openai",
-        description: "GPT-5 nano",
-        aliases: &["gpt-5-nano"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-5-2025-08-07",
-        provider: "openai",
-        description: "GPT-5 (2025-08-07)",
-        aliases: &["gpt-5-2025-08-07"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-5-mini-2025-08-07",
-        provider: "openai",
-        description: "GPT-5 mini (2025-08-07)",
-        aliases: &["gpt-5-mini-2025-08-07"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-5-nano-2025-08-07",
-        provider: "openai",
-        description: "GPT-5 nano (2025-08-07)",
-        aliases: &["gpt-5-nano-2025-08-07"],
-    },
-    BuiltinModel {
-        canonical: "openai/gpt-5.2-2025-12-11",
-        provider: "openai",
-        description: "GPT-5.2 (2025-12-11)",
-        aliases: &["gpt-5.2-2025-12-11", "gpt-5.2"],
+        description: "GPT-5.5 snapshot (2026-04-23)",
+        aliases: &["gpt-5.5-2026-04-23"],
     },
     BuiltinModel {
         canonical: "anthropic/claude-3-haiku-20240307",
@@ -274,7 +142,7 @@ const BUILTIN_MODELS: &[BuiltinModel] = &[
     },
 ];
 
-const DEFAULT_MODEL: &str = "openai/gpt-4o-mini";
+const DEFAULT_MODEL: &str = "openai/gpt-5.5";
 const DEFAULT_RETRIES: usize = 2;
 const DEFAULT_BACKOFF_MS: u64 = 250;
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
@@ -313,6 +181,9 @@ pub struct PromptConfig<'a> {
     pub temperature: Option<f32>,
     /// Maximum tokens override.
     pub max_tokens: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub reasoning_effort: Option<String>,
+    pub verbosity: Option<String>,
     /// Retry override (number of retries).
     pub retries: Option<usize>,
     /// Retry backoff override in milliseconds.
@@ -338,13 +209,16 @@ pub struct PromptDebugInfo {
     pub retry_backoff_ms: u64,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub reasoning_effort: Option<String>,
+    pub verbosity: Option<String>,
 }
 
 /// Execute a prompt using the OpenAI chat completions API.
 ///
 /// By default this targets `https://api.openai.com/v1/chat/completions`
 /// with the model specified via `LLM_OPENAI_MODEL` (default:
-/// `gpt-4o-mini`). Set the environment variable `LLM_PROMPT_STUB`
+/// `gpt-5.5`). Set the environment variable `LLM_PROMPT_STUB`
 /// to `1`/`true` for test environments that should avoid making a
 /// network request and instead return the historical stub output.
 pub fn execute_prompt(prompt: &str, config: PromptConfig<'_>) -> Result<String> {
@@ -374,6 +248,9 @@ pub fn execute_prompt_with_messages(
             attachments,
             temperature: None,
             max_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            verbosity: None,
             tools: None,
             functions: None,
             tool_choice: None,
@@ -381,7 +258,7 @@ pub fn execute_prompt_with_messages(
             schema: None,
         };
         apply_prompt_overrides(&mut request, &config);
-        log_prompt_result(&request, &stub, Duration::from_millis(0), &config)?;
+        log_prompt_result(&request, &stub, Duration::from_millis(0), &config, None)?;
         return Ok(stub);
     }
     let request = build_prompt_request_from_messages(messages, attachments, &config)?;
@@ -405,6 +282,9 @@ pub fn stream_prompt_with_messages(
             attachments,
             temperature: None,
             max_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            verbosity: None,
             tools: None,
             functions: None,
             tool_choice: None,
@@ -412,7 +292,7 @@ pub fn stream_prompt_with_messages(
             schema: None,
         };
         apply_prompt_overrides(&mut request, &config);
-        log_prompt_result(&request, &stub, Duration::from_millis(0), &config)?;
+        log_prompt_result(&request, &stub, Duration::from_millis(0), &config, None)?;
         return Ok(stub);
     }
     let request = build_prompt_request_from_messages(messages, attachments, &config)?;
@@ -439,6 +319,9 @@ pub fn prompt_debug_info(config: &PromptConfig<'_>) -> Result<PromptDebugInfo> {
         retry_backoff_ms,
         temperature: config.temperature,
         max_tokens: config.max_tokens,
+        max_output_tokens: config.max_output_tokens,
+        reasoning_effort: config.reasoning_effort.clone(),
+        verbosity: config.verbosity.clone(),
     })
 }
 
@@ -469,7 +352,7 @@ fn stream_prompt_internal(
             sink.handle_text_delta(&text)?;
             sink.handle_done()?;
         }
-        log_prompt_result(&request, &text, Duration::from_millis(0), &config)?;
+        log_prompt_result(&request, &text, Duration::from_millis(0), &config, None)?;
         return Ok(text);
     }
 
@@ -492,6 +375,9 @@ fn build_prompt_request_from_messages(
         attachments,
         temperature: None,
         max_tokens: None,
+        max_output_tokens: None,
+        reasoning_effort: None,
+        verbosity: None,
         tools: None,
         functions: None,
         tool_choice: None,
@@ -573,6 +459,15 @@ fn apply_prompt_overrides(request: &mut PromptRequest, config: &PromptConfig<'_>
     if let Some(max_tokens) = config.max_tokens {
         request.max_tokens = Some(max_tokens);
     }
+    if let Some(max_output_tokens) = config.max_output_tokens {
+        request.max_output_tokens = Some(max_output_tokens);
+    }
+    if let Some(reasoning_effort) = &config.reasoning_effort {
+        request.reasoning_effort = Some(reasoning_effort.clone());
+    }
+    if let Some(verbosity) = &config.verbosity {
+        request.verbosity = Some(verbosity.clone());
+    }
 }
 
 // ==================== Provider Factories ====================
@@ -619,6 +514,8 @@ impl registry::ProviderFactory for OpenAIProviderFactory {
             api_key: key,
             retries,
             retry_backoff: Duration::from_millis(retry_backoff_ms),
+            api_kind: OpenAIApiKind::Responses,
+            provider_id: "openai",
         })?))
     }
 
@@ -650,6 +547,8 @@ impl registry::ProviderFactory for OpenAICompatibleProviderFactory {
             api_key: key,
             retries,
             retry_backoff: Duration::from_millis(retry_backoff_ms),
+            api_kind: OpenAIApiKind::ChatCompletions,
+            provider_id: "openai-compatible",
         })?))
     }
 
@@ -717,16 +616,17 @@ fn execute_request(
     let request_for_logging = request.clone();
     let mut accumulator = VecStreamSink::new();
     let start = Instant::now();
+    let completion;
 
-    if provider.supports_streaming() {
+    if external_sink.is_some() && provider.supports_streaming() {
         if let Some(ref mut sink) = external_sink {
             let mut tee = TeeStreamSink::new(&mut accumulator, *sink);
-            provider.stream(request, &mut tee)?;
+            completion = provider.stream(request, &mut tee)?;
         } else {
-            provider.stream(request, &mut accumulator)?;
+            unreachable!("external_sink checked above");
         }
     } else {
-        let completion = provider.complete(request)?;
+        completion = provider.complete(request)?;
         accumulator.handle_text_delta(&completion.text)?;
         accumulator.handle_done()?;
         if let Some(ref mut sink) = external_sink {
@@ -737,7 +637,13 @@ fn execute_request(
 
     let duration = start.elapsed();
     let text = accumulator.into_string();
-    log_prompt_result(&request_for_logging, &text, duration, config)?;
+    log_prompt_result(
+        &request_for_logging,
+        &text,
+        duration,
+        config,
+        Some(&completion),
+    )?;
     Ok(text)
 }
 
@@ -746,6 +652,7 @@ fn log_prompt_result(
     response: &str,
     duration: Duration,
     config: &PromptConfig<'_>,
+    completion: Option<&providers::PromptCompletion>,
 ) -> Result<()> {
     if matches!(config.log_override, Some(false)) {
         return Ok(());
@@ -754,6 +661,29 @@ fn log_prompt_result(
     let (prompt, system) = extract_prompt_and_system(request);
     let prompt_json = serialize_prompt_messages(&request.messages)?;
     let options_json = options_metadata_json(config)?;
+    let usage = completion.and_then(|completion| completion.usage.as_ref());
+    let token_details = usage.and_then(|usage| {
+        if usage.cached_tokens.is_none() && usage.reasoning_tokens.is_none() {
+            None
+        } else {
+            Some(
+                json!({
+                    "cached_tokens": usage.cached_tokens,
+                    "reasoning_tokens": usage.reasoning_tokens,
+                })
+                .to_string(),
+            )
+        }
+    });
+    let tool_calls_json = completion
+        .and_then(|completion| completion.tool_calls.as_ref())
+        .and_then(|tool_calls| serde_json::to_string(tool_calls).ok());
+    let finish_reason = completion
+        .and_then(|completion| completion.finish_reason.as_ref())
+        .and_then(|reason| serde_json::to_value(reason).ok())
+        .and_then(|value| value.as_str().map(str::to_string));
+    let usage_json = completion.and_then(|completion| completion.usage_json.clone());
+
     let record = logs::LogRecord {
         model: config
             .model
@@ -765,18 +695,18 @@ fn log_prompt_result(
         prompt_json,
         options_json,
         response: response.to_string(),
-        response_json: None,
+        response_json: completion.and_then(|completion| completion.raw_response.clone()),
         conversation_id: config.conversation_id.map(|s| s.to_string()),
         conversation_name: config.conversation_name.map(|s| s.to_string()),
         conversation_model: config.conversation_model.map(|s| s.to_string()),
         duration_ms: Some(duration.as_millis()),
-        input_tokens: None,
-        output_tokens: None,
-        token_details: None,
-        tool_calls_json: None,
+        input_tokens: usage.and_then(|usage| usage.prompt_tokens),
+        output_tokens: usage.and_then(|usage| usage.completion_tokens),
+        token_details,
+        tool_calls_json,
         tool_results_json: None,
-        finish_reason: None,
-        usage_json: None,
+        finish_reason,
+        usage_json,
         schema_id: None,
     };
     let db_path = config.database_path.map(Path::new);
@@ -831,6 +761,15 @@ fn options_metadata_json(config: &PromptConfig<'_>) -> Result<Option<String>> {
     }
     if let Some(max) = config.max_tokens {
         map.insert("max_tokens".to_string(), json!(max));
+    }
+    if let Some(max) = config.max_output_tokens {
+        map.insert("max_output_tokens".to_string(), json!(max));
+    }
+    if let Some(reasoning_effort) = &config.reasoning_effort {
+        map.insert("reasoning_effort".to_string(), json!(reasoning_effort));
+    }
+    if let Some(verbosity) = &config.verbosity {
+        map.insert("verbosity".to_string(), json!(verbosity));
     }
     if let Some(retries) = config.retries {
         map.insert("retries".to_string(), json!(retries));
@@ -1466,6 +1405,52 @@ mod tests {
         }
     }
 
+    struct StreamingTestProvider;
+
+    impl PromptProvider for StreamingTestProvider {
+        fn id(&self) -> &'static str {
+            "streaming-test-plugin"
+        }
+
+        fn supports_streaming(&self) -> bool {
+            true
+        }
+
+        fn complete(&self, _request: PromptRequest) -> Result<providers::PromptCompletion> {
+            Ok(providers::PromptCompletion::text("complete-path"))
+        }
+
+        fn stream(
+            &self,
+            _request: PromptRequest,
+            sink: &mut dyn ProviderStreamSink,
+        ) -> Result<providers::PromptCompletion> {
+            sink.handle_text_delta("stream-path")?;
+            sink.handle_done()?;
+            Ok(providers::PromptCompletion::text("stream-path"))
+        }
+    }
+
+    struct StreamingTestFactory;
+
+    impl ProviderFactory for StreamingTestFactory {
+        fn create(
+            &self,
+            _request: &PromptRequest,
+            _config: &PromptConfig<'_>,
+        ) -> Result<Box<dyn PromptProvider>> {
+            Ok(Box::new(StreamingTestProvider))
+        }
+
+        fn id(&self) -> &str {
+            "streaming-test-plugin"
+        }
+
+        fn description(&self) -> &str {
+            "Streaming test plugin provider"
+        }
+    }
+
     #[test]
     fn user_dir_respects_env_override() {
         with_env_lock(|| {
@@ -1516,8 +1501,8 @@ mod tests {
             env::set_var("LLM_USER_PATH", tmp.path());
 
             let models = available_models().expect("models");
-            assert!(models.iter().any(|m| m.name == "openai/gpt-5.2-2025-12-11"));
-            assert!(models.iter().any(|m| m.name == "openai/gpt-5"));
+            assert!(models.iter().any(|m| m.name == "openai/gpt-5.5"));
+            assert!(models.iter().any(|m| m.name == "openai/gpt-5.5-2026-04-23"));
             assert!(models
                 .iter()
                 .any(|m| m.name == "anthropic/claude-sonnet-4-6"));
@@ -1573,14 +1558,35 @@ mod tests {
     }
 
     #[test]
+    fn execute_request_without_external_sink_uses_complete_path() {
+        with_env_lock(|| {
+            let tmp = temp_user_dir();
+            env::set_var("LLM_USER_PATH", tmp.path());
+
+            let model_id = unique_plugin_model_id("streaming-complete");
+            provider_registry().register_plugin(&model_id, Box::new(StreamingTestFactory));
+
+            let request = PromptRequest::user_only(model_id, "hello".to_string());
+            let config = PromptConfig {
+                log_override: Some(false),
+                ..PromptConfig::default()
+            };
+            let response = execute_request(request, &config, None).expect("execute request");
+            assert_eq!(response, "complete-path");
+
+            env::remove_var("LLM_USER_PATH");
+        });
+    }
+
+    #[test]
     fn set_default_model_accepts_new_release_aliases() {
         with_env_lock(|| {
             let tmp = temp_user_dir();
             env::set_var("LLM_USER_PATH", tmp.path());
 
-            set_default_model("gpt-5.2").expect("set default gpt-5.2");
+            set_default_model("gpt-5.5").expect("set default gpt-5.5");
             let stored = get_default_model().expect("stored").unwrap();
-            assert_eq!(stored, "openai/gpt-5.2-2025-12-11");
+            assert_eq!(stored, "openai/gpt-5.5");
 
             set_default_model("claude-opus-4.6").expect("set default claude-opus-4.6");
             let stored = get_default_model().expect("stored").unwrap();
@@ -1630,9 +1636,9 @@ mod tests {
         with_env_lock(|| {
             let tmp = temp_user_dir();
             env::set_var("LLM_USER_PATH", tmp.path());
-            set_default_model("4o").expect("alias resolves");
+            set_default_model("5.5").expect("alias resolves");
             let stored = get_default_model().expect("stored").unwrap();
-            assert_eq!(stored, "openai/gpt-4o");
+            assert_eq!(stored, "openai/gpt-5.5");
             env::remove_var("LLM_USER_PATH");
         });
     }
@@ -1728,11 +1734,11 @@ mod tests {
             env::set_var("LLM_USER_PATH", tmp.path());
 
             // User alias that points to a built-in alias
-            crate::aliases::set_alias("smart", "4o").expect("set alias");
+            crate::aliases::set_alias("smart", "5.5").expect("set alias");
 
             // Should recursively resolve to canonical
             let resolved = normalize_model_name("smart");
-            assert_eq!(resolved, "openai/gpt-4o");
+            assert_eq!(resolved, "openai/gpt-5.5");
 
             env::remove_var("LLM_USER_PATH");
         });
@@ -1745,11 +1751,11 @@ mod tests {
             env::set_var("LLM_USER_PATH", tmp.path());
 
             // Try to override a built-in alias (shouldn't work - built-ins checked first)
-            crate::aliases::set_alias("4o", "anthropic/claude-3-opus").expect("set alias");
+            crate::aliases::set_alias("5.5", "anthropic/claude-3-opus").expect("set alias");
 
             // Built-in should win
-            let resolved = normalize_model_name("4o");
-            assert_eq!(resolved, "openai/gpt-4o");
+            let resolved = normalize_model_name("5.5");
+            assert_eq!(resolved, "openai/gpt-5.5");
 
             env::remove_var("LLM_USER_PATH");
         });
@@ -1835,12 +1841,12 @@ mod tests {
             let tmp = temp_user_dir();
             env::set_var("LLM_USER_PATH", tmp.path());
 
-            // Chain: a -> b -> gpt-4o
-            crate::aliases::set_alias("b", "4o").expect("set alias b");
+            // Chain: a -> b -> gpt-5.5
+            crate::aliases::set_alias("b", "5.5").expect("set alias b");
             crate::aliases::set_alias("a", "b").expect("set alias a");
 
             let resolved = normalize_model_name("a");
-            assert_eq!(resolved, "openai/gpt-4o");
+            assert_eq!(resolved, "openai/gpt-5.5");
 
             env::remove_var("LLM_USER_PATH");
         });
