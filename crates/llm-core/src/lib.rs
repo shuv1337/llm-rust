@@ -6,7 +6,9 @@
 use anyhow::{anyhow, bail, Context, Result};
 use directories::ProjectDirs;
 use providers::anthropic::{AnthropicConfig, AnthropicProvider};
-use providers::openai::{OpenAIApiKind, OpenAIConfig, OpenAIProvider};
+use providers::openai::{
+    OpenAIApiKind, OpenAIAuth, OpenAIChatGptAuth, OpenAIConfig, OpenAIProvider,
+};
 use providers::StreamSink as ProviderStreamSink;
 use providers::{PromptProvider, PromptRequest, VecStreamSink};
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,7 @@ use std::time::{Duration, Instant};
 
 mod aliases;
 mod attachments;
+pub mod auth;
 mod fragments;
 mod logs;
 pub mod migrations;
@@ -33,6 +36,13 @@ pub use aliases::{
 };
 pub use attachments::{
     detect_mime_from_content, detect_mime_from_path, detect_remote_mime, Attachment,
+};
+pub use auth::{
+    auth_path, auth_preferences_path, exchange_openai_code, exchange_openai_device_code,
+    generate_pkce_flow, get_auth_preference, get_oauth_credentials, poll_device_auth,
+    refresh_openai_credentials, remove_auth, save_oauth_credentials, set_auth_preference,
+    start_device_auth, AuthPreference, OpenAIOAuthCredentials, OPENAI_BROWSER_REDIRECT_URI,
+    OPENAI_DEVICE_URL, OPENAI_OAUTH_PORT,
 };
 pub use fragments::{
     fragment_hash, fragment_loader_registry, list_fragment_loaders, load_fragments, Fragment,
@@ -79,6 +89,25 @@ fn provider_supports_async(provider: &str) -> bool {
     matches!(provider, "openai")
 }
 
+fn model_auth_modes(model: &BuiltinModel) -> Vec<String> {
+    if model.provider != "openai" {
+        return Vec::new();
+    }
+    let mut modes = vec!["api_key".to_string()];
+    if matches!(
+        model.canonical,
+        "openai/gpt-5.5"
+            | "openai/gpt-5.4"
+            | "openai/gpt-5.4-mini"
+            | "openai/gpt-5.2"
+            | "openai/gpt-5.3-codex"
+            | "openai/gpt-5.3-codex-spark"
+    ) {
+        modes.push("chatgpt_oauth".to_string());
+    }
+    modes
+}
+
 const BUILTIN_MODELS: &[BuiltinModel] = &[
     BuiltinModel {
         canonical: "openai/gpt-5.5",
@@ -91,6 +120,36 @@ const BUILTIN_MODELS: &[BuiltinModel] = &[
         provider: "openai",
         description: "GPT-5.5 snapshot (2026-04-23)",
         aliases: &["gpt-5.5-2026-04-23"],
+    },
+    BuiltinModel {
+        canonical: "openai/gpt-5.4",
+        provider: "openai",
+        description: "GPT-5.4",
+        aliases: &["gpt-5.4", "5.4"],
+    },
+    BuiltinModel {
+        canonical: "openai/gpt-5.4-mini",
+        provider: "openai",
+        description: "GPT-5.4 Mini",
+        aliases: &["gpt-5.4-mini", "5.4-mini"],
+    },
+    BuiltinModel {
+        canonical: "openai/gpt-5.2",
+        provider: "openai",
+        description: "GPT-5.2",
+        aliases: &["gpt-5.2", "5.2"],
+    },
+    BuiltinModel {
+        canonical: "openai/gpt-5.3-codex",
+        provider: "openai",
+        description: "GPT-5.3 Codex",
+        aliases: &["gpt-5.3-codex"],
+    },
+    BuiltinModel {
+        canonical: "openai/gpt-5.3-codex-spark",
+        provider: "openai",
+        description: "GPT-5.3 Codex Spark",
+        aliases: &["gpt-5.3-codex-spark"],
     },
     BuiltinModel {
         canonical: "anthropic/claude-3-haiku-20240307",
@@ -163,6 +222,8 @@ pub struct ModelInfo {
     pub supports_async: bool,
     /// Whether the model has stored default options.
     pub has_options: bool,
+    /// Supported auth modes, serialized as `api_key` and/or `chatgpt_oauth`.
+    pub auth_modes: Vec<String>,
 }
 
 /// Returns a static string identifying the core crate version.
@@ -212,6 +273,7 @@ pub struct PromptDebugInfo {
     pub max_output_tokens: Option<u32>,
     pub reasoning_effort: Option<String>,
     pub verbosity: Option<String>,
+    pub auth_mode: Option<String>,
 }
 
 /// Execute a prompt using the OpenAI chat completions API.
@@ -314,7 +376,7 @@ pub fn prompt_debug_info(config: &PromptConfig<'_>) -> Result<PromptDebugInfo> {
     let retry_backoff_ms = resolve_retry_backoff_ms(provider.as_str(), config);
     Ok(PromptDebugInfo {
         model,
-        provider,
+        provider: provider.clone(),
         retries,
         retry_backoff_ms,
         temperature: config.temperature,
@@ -322,6 +384,14 @@ pub fn prompt_debug_info(config: &PromptConfig<'_>) -> Result<PromptDebugInfo> {
         max_output_tokens: config.max_output_tokens,
         reasoning_effort: config.reasoning_effort.clone(),
         verbosity: config.verbosity.clone(),
+        auth_mode: if provider == "openai" {
+            Some(match resolve_openai_auth(config)? {
+                OpenAIAuth::ApiKey(_) => "api_key".to_string(),
+                OpenAIAuth::ChatGptOAuth(_) => "chatgpt_oauth".to_string(),
+            })
+        } else {
+            None
+        },
     })
 }
 
@@ -506,12 +576,11 @@ impl registry::ProviderFactory for OpenAIProviderFactory {
         let provider_id = "openai";
         let retries = resolve_retries(provider_id, config);
         let retry_backoff_ms = resolve_retry_backoff_ms(provider_id, config);
-        let key = resolve_api_key(provider_id, config)?;
-        let base_url =
-            env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+        let auth = resolve_openai_auth(config)?;
+        let base_url = resolve_openai_base_url();
         Ok(Box::new(OpenAIProvider::new(OpenAIConfig {
             base_url,
-            api_key: key,
+            auth,
             retries,
             retry_backoff: Duration::from_millis(retry_backoff_ms),
             api_kind: OpenAIApiKind::Responses,
@@ -544,7 +613,7 @@ impl registry::ProviderFactory for OpenAICompatibleProviderFactory {
         let base_url = resolve_openai_compatible_base_url();
         Ok(Box::new(OpenAIProvider::new(OpenAIConfig {
             base_url,
-            api_key: key,
+            auth: OpenAIAuth::ApiKey(key),
             retries,
             retry_backoff: Duration::from_millis(retry_backoff_ms),
             api_kind: OpenAIApiKind::ChatCompletions,
@@ -660,7 +729,7 @@ fn log_prompt_result(
     let force_logging = matches!(config.log_override, Some(true));
     let (prompt, system) = extract_prompt_and_system(request);
     let prompt_json = serialize_prompt_messages(&request.messages)?;
-    let options_json = options_metadata_json(config)?;
+    let options_json = merge_completion_metadata(options_metadata_json(config)?, completion)?;
     let usage = completion.and_then(|completion| completion.usage.as_ref());
     let token_details = usage.and_then(|usage| {
         if usage.cached_tokens.is_none() && usage.reasoning_tokens.is_none() {
@@ -788,12 +857,75 @@ fn options_metadata_json(config: &PromptConfig<'_>) -> Result<Option<String>> {
     }
 }
 
+fn merge_completion_metadata(
+    options_json: Option<String>,
+    completion: Option<&providers::PromptCompletion>,
+) -> Result<Option<String>> {
+    let mut map = match options_json {
+        Some(raw) => serde_json::from_str::<JsonValue>(&raw)?
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        None => JsonMap::new(),
+    };
+    if let Some(metadata) = completion.and_then(|completion| completion.metadata.as_ref()) {
+        if let Some(object) = metadata.as_object() {
+            for (key, value) in object {
+                map.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    if map.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(JsonValue::Object(map).to_string()))
+    }
+}
+
 fn resolve_api_key(provider_id: &str, config: &PromptConfig<'_>) -> Result<String> {
     if let Some(override_key) = config.api_key {
         resolve_key_override(override_key)
     } else {
         resolve_provider_key(provider_id)
     }
+}
+
+fn resolve_openai_auth(config: &PromptConfig<'_>) -> Result<OpenAIAuth> {
+    if let Some(override_key) = config.api_key {
+        return Ok(OpenAIAuth::ApiKey(resolve_key_override(override_key)?));
+    }
+
+    match auth::get_auth_preference("openai")? {
+        AuthPreference::ApiKey => Ok(OpenAIAuth::ApiKey(resolve_provider_key("openai")?)),
+        AuthPreference::ChatGpt => resolve_chatgpt_oauth(),
+        AuthPreference::Auto => {
+            if let Ok(key) = resolve_provider_key("openai") {
+                Ok(OpenAIAuth::ApiKey(key))
+            } else if let Some(creds) = auth::get_oauth_credentials("openai")? {
+                ensure_no_openai_base_url(OpenAIAuth::ChatGptOAuth(OpenAIChatGptAuth::new(creds)))
+            } else {
+                bail!(
+                    "OpenAI API key not configured. Run `llm keys set openai --value <key>` for API key access or `llm auth login openai --use` for ChatGPT Plus/Pro OAuth."
+                )
+            }
+        }
+    }
+}
+
+fn resolve_chatgpt_oauth() -> Result<OpenAIAuth> {
+    let creds = auth::get_oauth_credentials("openai")?.ok_or_else(|| {
+        anyhow!(
+            "OpenAI ChatGPT OAuth credentials not configured. Run `llm auth login openai --use`."
+        )
+    })?;
+    ensure_no_openai_base_url(OpenAIAuth::ChatGptOAuth(OpenAIChatGptAuth::new(creds)))
+}
+
+fn ensure_no_openai_base_url(auth: OpenAIAuth) -> Result<OpenAIAuth> {
+    if env::var("OPENAI_BASE_URL").is_ok() || env::var("LLM_OPENAI_BASE_URL").is_ok() {
+        bail!("ChatGPT OAuth mode does not support OPENAI_BASE_URL or LLM_OPENAI_BASE_URL; unset the custom base URL or use API-key mode");
+    }
+    Ok(auth)
 }
 
 fn resolve_key_override(value: &str) -> Result<String> {
@@ -849,12 +981,21 @@ fn resolve_provider_key(provider_id: &str) -> Result<String> {
         }
     }
 
-    bail!(
-        "{} API key not configured. Run `llm keys set {} --value <key>` or set one of: {}",
-        info.display,
-        info.alias,
-        info.env_vars.join(", ")
-    )
+    if provider_id == "openai" {
+        bail!(
+            "{} credentials not configured. Run `llm keys set {} --value <key>` for API key access or `llm auth login openai --use` for ChatGPT Plus/Pro OAuth. You can also set one of: {}",
+            info.display,
+            info.alias,
+            info.env_vars.join(", ")
+        )
+    } else {
+        bail!(
+            "{} API key not configured. Run `llm keys set {} --value <key>` or set one of: {}",
+            info.display,
+            info.alias,
+            info.env_vars.join(", ")
+        )
+    }
 }
 
 fn sanitize_secret(value: &str) -> String {
@@ -900,6 +1041,12 @@ fn resolve_openai_compatible_base_url() -> String {
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string())
 }
 
+fn resolve_openai_base_url() -> String {
+    env::var("OPENAI_BASE_URL")
+        .or_else(|_| env::var("LLM_OPENAI_BASE_URL"))
+        .unwrap_or_else(|_| "https://api.openai.com/v1".to_string())
+}
+
 fn resolve_anthropic_base_url() -> String {
     env::var("ANTHROPIC_BASE_URL")
         .or_else(|_| env::var("LLM_ANTHROPIC_BASE_URL"))
@@ -939,6 +1086,7 @@ pub fn available_models() -> Result<Vec<ModelInfo>> {
             supports_schemas: provider_supports_schemas(model.provider),
             supports_async: provider_supports_async(model.provider),
             has_options: stored_options.contains_key(model.canonical),
+            auth_modes: model_auth_modes(model),
         })
         .collect();
 
@@ -976,6 +1124,7 @@ pub fn available_models() -> Result<Vec<ModelInfo>> {
             supports_schemas: provider_supports_schemas(&provider),
             supports_async: provider_supports_async(&provider),
             has_options: stored_options.contains_key(&registration.key),
+            auth_modes: Vec::new(),
         });
     }
 
@@ -992,6 +1141,11 @@ pub fn available_models() -> Result<Vec<ModelInfo>> {
                 supports_schemas: provider_supports_schemas(&provider),
                 supports_async: provider_supports_async(&provider),
                 has_options: stored_options.contains_key(default_name),
+                auth_modes: if provider == "openai" {
+                    vec!["api_key".to_string()]
+                } else {
+                    Vec::new()
+                },
             });
         } else {
             for model in &mut models {

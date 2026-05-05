@@ -2,6 +2,10 @@ use super::{
     FinishReason, FunctionCall, MessageRole, PromptCompletion, PromptProvider, PromptRequest,
     ResponseFormat, StreamSink, ToolCall, ToolChoice, ToolDefinition, UsageInfo,
 };
+use crate::auth::{
+    credentials_need_refresh, refresh_openai_credentials, save_oauth_credentials,
+    OpenAIOAuthCredentials,
+};
 use crate::{normalize_model_name, Attachment};
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::{blocking::Client, StatusCode};
@@ -9,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,7 +27,7 @@ pub enum OpenAIApiKind {
 pub struct OpenAIProvider {
     client: Client,
     base_url: String,
-    api_key: String,
+    auth: OpenAIAuth,
     retries: usize,
     retry_backoff: Duration,
     api_kind: OpenAIApiKind,
@@ -32,11 +37,55 @@ pub struct OpenAIProvider {
 #[derive(Debug, Clone)]
 pub struct OpenAIConfig {
     pub base_url: String,
-    pub api_key: String,
+    pub auth: OpenAIAuth,
     pub retries: usize,
     pub retry_backoff: Duration,
     pub api_kind: OpenAIApiKind,
     pub provider_id: &'static str,
+}
+
+#[derive(Debug, Clone)]
+pub enum OpenAIAuth {
+    ApiKey(String),
+    ChatGptOAuth(OpenAIChatGptAuth),
+}
+
+#[derive(Debug)]
+pub struct OpenAIChatGptAuth {
+    credentials: Mutex<OpenAIOAuthCredentials>,
+}
+
+impl Clone for OpenAIChatGptAuth {
+    fn clone(&self) -> Self {
+        let credentials = self
+            .credentials
+            .lock()
+            .expect("oauth mutex poisoned")
+            .clone();
+        Self {
+            credentials: Mutex::new(credentials),
+        }
+    }
+}
+
+impl OpenAIChatGptAuth {
+    pub fn new(credentials: OpenAIOAuthCredentials) -> Self {
+        Self {
+            credentials: Mutex::new(credentials),
+        }
+    }
+
+    fn fresh_credentials(&self) -> Result<OpenAIOAuthCredentials> {
+        let mut guard = self.credentials.lock().expect("oauth mutex poisoned");
+        if !credentials_need_refresh(&guard) {
+            return Ok(guard.clone());
+        }
+        let refreshed = refresh_openai_credentials(&guard)
+            .context("OpenAI ChatGPT OAuth refresh failed; run `llm auth login openai` again")?;
+        save_oauth_credentials("openai", &refreshed)?;
+        *guard = refreshed.clone();
+        Ok(refreshed)
+    }
 }
 
 impl OpenAIProvider {
@@ -48,7 +97,7 @@ impl OpenAIProvider {
             .context("failed to build OpenAI HTTP client")?;
         Ok(Self {
             client,
-            api_key: config.api_key,
+            auth: config.auth,
             base_url,
             retries: config.retries,
             retry_backoff: config.retry_backoff,
@@ -58,6 +107,9 @@ impl OpenAIProvider {
     }
 
     fn endpoint(&self) -> String {
+        if matches!(self.auth, OpenAIAuth::ChatGptOAuth(_)) {
+            return "https://chatgpt.com/backend-api/codex/responses".to_string();
+        }
         match self.api_kind {
             OpenAIApiKind::Responses => format!("{}/responses", self.base_url),
             OpenAIApiKind::ChatCompletions => format!("{}/chat/completions", self.base_url),
@@ -73,12 +125,26 @@ impl OpenAIProvider {
         let mut attempt = 0usize;
         loop {
             let start = Instant::now();
-            let result = self
-                .client
-                .post(url)
-                .bearer_auth(&self.api_key)
-                .json(request)
-                .send();
+            let mut builder = self.client.post(url).json(request);
+            match &self.auth {
+                OpenAIAuth::ApiKey(key) => {
+                    builder = builder.bearer_auth(key);
+                }
+                OpenAIAuth::ChatGptOAuth(auth) => {
+                    if self.api_kind != OpenAIApiKind::Responses {
+                        bail!("ChatGPT OAuth is only supported for OpenAI Responses requests");
+                    }
+                    let creds = auth.fresh_credentials()?;
+                    builder = builder
+                        .bearer_auth(&creds.access)
+                        .header("User-Agent", "llm-rust")
+                        .header("Originator", "llm-rust");
+                    if let Some(account_id) = creds.account_id {
+                        builder = builder.header("ChatGPT-Account-Id", account_id);
+                    }
+                }
+            }
+            let result = builder.send();
 
             match result {
                 Ok(response) => {
@@ -148,6 +214,15 @@ impl OpenAIProvider {
         }
     }
 
+    fn auth_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "openai_auth_mode": match self.auth {
+                OpenAIAuth::ApiKey(_) => "api_key",
+                OpenAIAuth::ChatGptOAuth(_) => "chatgpt_oauth",
+            }
+        })
+    }
+
     fn request_chat(
         &self,
         mut request: OpenAIChatRequest,
@@ -165,6 +240,9 @@ impl OpenAIProvider {
         stream: bool,
     ) -> Result<reqwest::blocking::Response> {
         request.stream = Some(stream);
+        if matches!(self.auth, OpenAIAuth::ChatGptOAuth(_)) && request.instructions.is_none() {
+            request.instructions = Some("Follow the user's instructions.".to_string());
+        }
         self.post_json(&self.endpoint(), &request, stream)
     }
 
@@ -219,12 +297,16 @@ impl PromptProvider for OpenAIProvider {
             OpenAIApiKind::Responses => {
                 let response = self
                     .request_responses_completion(OpenAIResponsesRequest::from_prompt(request)?)?;
-                Ok(response.into_completion())
+                let mut completion = response.into_completion();
+                completion.metadata = Some(self.auth_metadata());
+                Ok(completion)
             }
             OpenAIApiKind::ChatCompletions => {
                 let response =
                     self.request_chat_completion(OpenAIChatRequest::from_prompt(request)?)?;
-                Ok(response.into_completion())
+                let mut completion = response.into_completion();
+                completion.metadata = Some(self.auth_metadata());
+                Ok(completion)
             }
         }
     }
@@ -364,6 +446,7 @@ impl OpenAIProvider {
             }
         }
         sink.handle_done()?;
+        completion.metadata = Some(self.auth_metadata());
         Ok(completion)
     }
 
@@ -478,6 +561,7 @@ impl OpenAIProvider {
             tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
             finish_reason,
             function_call: None,
+            metadata: Some(self.auth_metadata()),
         })
     }
 }
@@ -581,6 +665,8 @@ fn response_tool_buffers_to_tool_calls(
 #[derive(Debug, Serialize)]
 pub struct OpenAIResponsesRequest {
     pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     pub input: Vec<ResponseInputItem>,
     pub store: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -677,7 +763,14 @@ impl OpenAIResponsesRequest {
             .map(|(idx, _)| idx);
 
         let mut input = Vec::with_capacity(request.messages.len().max(1));
+        let mut instructions = Vec::new();
         for (idx, message) in request.messages.into_iter().enumerate() {
+            if matches!(message.role, MessageRole::System) {
+                if !message.content.is_empty() {
+                    instructions.push(message.content);
+                }
+                continue;
+            }
             let mut content = Vec::new();
             if !message.content.is_empty() {
                 content.push(ResponseInputPart::Text {
@@ -716,6 +809,7 @@ impl OpenAIResponsesRequest {
 
         Ok(Self {
             model,
+            instructions: (!instructions.is_empty()).then(|| instructions.join("\n\n")),
             input,
             store: false,
             stream: None,
@@ -949,6 +1043,7 @@ impl OpenAIResponsesResponse {
             tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
             finish_reason,
             function_call: None,
+            metadata: None,
         }
     }
 }
@@ -1157,6 +1252,7 @@ impl OpenAIChatResponse {
             tool_calls,
             finish_reason,
             function_call,
+            metadata: None,
         }
     }
 }
@@ -1430,9 +1526,10 @@ mod tests {
         };
         let req = OpenAIResponsesRequest::from_prompt(request).expect("request");
         let serialized = serde_json::to_value(&req).expect("serialize");
-        assert_eq!(serialized["input"][0]["role"], "system");
-        assert_eq!(serialized["input"][1]["content"][1]["type"], "input_image");
-        assert!(serialized["input"][1]["content"][1]["image_url"]
+        assert_eq!(serialized["instructions"], "Be terse");
+        assert_eq!(serialized["input"][0]["role"], "user");
+        assert_eq!(serialized["input"][0]["content"][1]["type"], "input_image");
+        assert!(serialized["input"][0]["content"][1]["image_url"]
             .as_str()
             .unwrap()
             .starts_with("data:image/png;base64,"));

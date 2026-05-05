@@ -8,17 +8,21 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use clap::{error::ErrorKind, Args, CommandFactory, Parser, Subcommand};
 use llm_core::{
-    aliases_path, available_models, backup_logs, core_version, detect_mime_from_content,
-    detect_mime_from_path, detect_remote_mime, embeddings_db_path, execute_prompt_with_messages,
-    get_default_model, get_latest_conversation_id, get_model_options, get_schema, get_tool,
-    keys_path, list_aliases, list_key_names, list_logs, list_model_options, list_schemas,
-    list_template_loaders, list_templates, list_tools, load_conversation_messages, load_keys,
-    load_template, logs_db_path, logs_status, migrations::generate_response_ulid,
-    prompt_debug_info, query_models, remove_alias, remove_model_options, resolve_key, save_key,
-    save_template, set_alias, set_default_model, set_logging_enabled, set_model_options,
-    stream_prompt_with_messages, templates_path, Attachment, KeyQuery, ListLogsOptions,
-    ListToolsOptions, LogEntry, MessageRole, ModelInfo, ModelOptions, PromptConfig, PromptMessage,
-    StreamSink,
+    aliases_path, auth_path, available_models, backup_logs, core_version, detect_mime_from_content,
+    detect_mime_from_path, detect_remote_mime, embeddings_db_path, exchange_openai_code,
+    exchange_openai_device_code, execute_prompt_with_messages, generate_pkce_flow,
+    get_auth_preference, get_default_model, get_latest_conversation_id, get_model_options,
+    get_oauth_credentials, get_schema, get_tool, keys_path, list_aliases, list_key_names,
+    list_logs, list_model_options, list_schemas, list_template_loaders, list_templates, list_tools,
+    load_conversation_messages, load_keys, load_template, logs_db_path, logs_status,
+    migrations::generate_response_ulid, poll_device_auth, prompt_debug_info, query_models,
+    refresh_openai_credentials, remove_alias, remove_auth, remove_model_options, resolve_key,
+    save_key, save_oauth_credentials, save_template, set_alias, set_auth_preference,
+    set_default_model, set_logging_enabled, set_model_options, start_device_auth,
+    stream_prompt_with_messages, templates_path, Attachment, AuthPreference, KeyQuery,
+    ListLogsOptions, ListToolsOptions, LogEntry, MessageRole, ModelInfo, ModelOptions,
+    PromptConfig, PromptMessage, StreamSink, OPENAI_BROWSER_REDIRECT_URI, OPENAI_DEVICE_URL,
+    OPENAI_OAUTH_PORT,
 };
 use llm_embeddings::{
     create_embedding_provider, delete_collection, list_collections, list_embedding_models,
@@ -31,10 +35,12 @@ use shell_words::split as shell_split;
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
 use tracing::info;
 
@@ -199,6 +205,8 @@ enum Command {
     Models(ModelsArgs),
     /// Manage stored API keys
     Keys(KeysArgs),
+    /// Manage OAuth authentication
+    Auth(AuthArgs),
     /// Manage model aliases
     Aliases(AliasesArgs),
     /// Manage prompt logs
@@ -409,6 +417,68 @@ struct ModelsOptionsClearArgs {
 struct KeysArgs {
     #[command(subcommand)]
     command: KeysSubcommand,
+}
+
+#[derive(Args)]
+struct AuthArgs {
+    #[command(subcommand)]
+    command: AuthSubcommand,
+}
+
+#[derive(Subcommand)]
+enum AuthSubcommand {
+    /// Output the path to the auth.json file
+    Path,
+    /// Log in with provider OAuth
+    Login(AuthLoginArgs),
+    /// Show provider auth status
+    Status(AuthStatusArgs),
+    /// Persist preferred auth mode
+    Use(AuthUseArgs),
+    /// Refresh stored provider credentials
+    Refresh(AuthProviderArgs),
+    /// Remove stored provider credentials
+    Logout(AuthProviderArgs),
+}
+
+#[derive(Args)]
+struct AuthProviderArgs {
+    provider: String,
+}
+
+#[derive(Args)]
+struct AuthLoginArgs {
+    provider: String,
+    #[arg(long)]
+    headless: bool,
+    #[arg(long = "use")]
+    use_auth: bool,
+    #[arg(long = "callback-port", default_value_t = OPENAI_OAUTH_PORT)]
+    callback_port: u16,
+}
+
+#[derive(Args)]
+struct AuthStatusArgs {
+    provider: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct AuthUseArgs {
+    provider: String,
+    mode: AuthPreferenceArg,
+}
+
+#[derive(Clone)]
+struct AuthPreferenceArg(AuthPreference);
+
+impl std::str::FromStr for AuthPreferenceArg {
+    type Err = anyhow::Error;
+
+    fn from_str(raw: &str) -> Result<Self> {
+        Ok(Self(raw.parse()?))
+    }
 }
 
 #[derive(Subcommand)]
@@ -1034,6 +1104,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Some(Command::Keys(args)) => {
             handle_keys(args)?;
+        }
+        Some(Command::Auth(args)) => {
+            handle_auth(args)?;
         }
         Some(Command::Aliases(args)) => {
             handle_aliases(args)?;
@@ -1793,6 +1866,7 @@ fn log_prompt_debug(
             max_output_tokens = ?info.max_output_tokens,
             reasoning_effort = ?info.reasoning_effort,
             verbosity = ?info.verbosity,
+            auth_mode = ?info.auth_mode,
             retries = info.retries,
             retry_backoff_ms = info.retry_backoff_ms,
             streaming,
@@ -2198,6 +2272,185 @@ fn handle_keys(args: KeysArgs) -> Result<()> {
                 bail!("No key could be resolved");
             }
         }
+    }
+    Ok(())
+}
+
+fn handle_auth(args: AuthArgs) -> Result<()> {
+    match args.command {
+        AuthSubcommand::Path => println!("{}", auth_path()?.display()),
+        AuthSubcommand::Login(args) => auth_login(args)?,
+        AuthSubcommand::Status(args) => auth_status(args)?,
+        AuthSubcommand::Use(args) => {
+            ensure_openai_provider(&args.provider)?;
+            set_auth_preference("openai", args.mode.0)?;
+            println!("OpenAI auth preference set to {}.", args.mode.0.as_str());
+        }
+        AuthSubcommand::Refresh(args) => {
+            ensure_openai_provider(&args.provider)?;
+            let creds = get_oauth_credentials("openai")?.ok_or_else(|| {
+                anyhow!("No OpenAI OAuth credentials stored. Run `llm auth login openai`.")
+            })?;
+            let refreshed = refresh_openai_credentials(&creds)?;
+            save_oauth_credentials("openai", &refreshed)?;
+            println!("OpenAI OAuth credentials refreshed.");
+        }
+        AuthSubcommand::Logout(args) => {
+            ensure_openai_provider(&args.provider)?;
+            let removed = remove_auth("openai")?;
+            if removed {
+                println!("Removed OpenAI OAuth credentials.");
+            } else {
+                println!("No OpenAI OAuth credentials were stored.");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn auth_login(args: AuthLoginArgs) -> Result<()> {
+    ensure_openai_provider(&args.provider)?;
+    let creds = if args.headless {
+        auth_login_headless()?
+    } else {
+        auth_login_browser(args.callback_port)?
+    };
+    save_oauth_credentials("openai", &creds)?;
+    if args.use_auth {
+        set_auth_preference("openai", AuthPreference::ChatGpt)?;
+    }
+    println!("Saved OpenAI ChatGPT OAuth credentials.");
+    if !args.use_auth {
+        println!("Use `llm auth use openai chatgpt` to prefer ChatGPT OAuth.");
+    }
+    Ok(())
+}
+
+fn auth_status(args: AuthStatusArgs) -> Result<()> {
+    ensure_openai_provider(&args.provider)?;
+    let creds = get_oauth_credentials("openai")?;
+    let preference = get_auth_preference("openai")?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "provider": "openai",
+                "has_oauth": creds.is_some(),
+                "expires": creds.as_ref().map(|c| c.expires_at_ms),
+                "accountId": creds.as_ref().and_then(|c| c.account_id.clone()),
+                "preference": preference.as_str(),
+            }))?
+        );
+    } else {
+        println!("Provider: openai");
+        println!(
+            "OAuth credentials: {}",
+            if creds.is_some() {
+                "present"
+            } else {
+                "missing"
+            }
+        );
+        if let Some(creds) = creds {
+            println!("Expires: {}", creds.expires_at_ms);
+            if let Some(account_id) = creds.account_id {
+                println!("Account ID: {account_id}");
+            }
+        }
+        println!("Preference: {}", preference.as_str());
+    }
+    Ok(())
+}
+
+fn auth_login_headless() -> Result<llm_core::OpenAIOAuthCredentials> {
+    let start = start_device_auth()?;
+    println!(
+        "Open {OPENAI_DEVICE_URL} and enter code: {}",
+        start.user_code
+    );
+    let interval = Duration::from_secs(start.interval.unwrap_or(5).saturating_add(1));
+    loop {
+        std::thread::sleep(interval);
+        if let Some(token) = poll_device_auth(&start.device_auth_id, &start.user_code)? {
+            return exchange_openai_device_code(&token.authorization_code);
+        }
+    }
+}
+
+fn auth_login_browser(callback_port: u16) -> Result<llm_core::OpenAIOAuthCredentials> {
+    if callback_port != OPENAI_OAUTH_PORT {
+        bail!("OpenAI OAuth currently requires callback port {OPENAI_OAUTH_PORT}");
+    }
+    let listener = TcpListener::bind(("127.0.0.1", callback_port))
+        .with_context(|| format!("failed to bind OAuth callback port {callback_port}"))?;
+    listener.set_nonblocking(true)?;
+    let flow = generate_pkce_flow(OPENAI_BROWSER_REDIRECT_URI)?;
+    println!("Open this URL to log in:\n{}", flow.authorize_url);
+    let _ = open::that(&flow.authorize_url);
+    let callback = wait_for_oauth_callback(&listener, &flow.state, Duration::from_secs(300))?;
+    exchange_openai_code(&callback, &flow.verifier, OPENAI_BROWSER_REDIRECT_URI)
+}
+
+fn wait_for_oauth_callback(
+    listener: &TcpListener,
+    expected_state: &str,
+    timeout: Duration,
+) -> Result<String> {
+    let start = Instant::now();
+    loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => return handle_oauth_stream(&mut stream, expected_state),
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                if start.elapsed() > timeout {
+                    bail!("Timed out waiting for OpenAI OAuth callback");
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(err) => return Err(err).context("failed accepting OAuth callback"),
+        }
+    }
+}
+
+fn handle_oauth_stream(stream: &mut TcpStream, expected_state: &str) -> Result<String> {
+    let mut buffer = [0u8; 8192];
+    let size = stream.read(&mut buffer)?;
+    let request = String::from_utf8_lossy(&buffer[..size]);
+    let first_line = request.lines().next().unwrap_or_default();
+    let target = first_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| anyhow!("invalid OAuth callback request"))?;
+    let url = url::Url::parse(&format!("http://localhost{target}"))?;
+    let params: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+    let response;
+    if params.get("state").map(String::as_str) != Some(expected_state) {
+        response = oauth_http_response("OAuth state mismatch.");
+        stream.write_all(response.as_bytes())?;
+        bail!("OpenAI OAuth state mismatch");
+    }
+    if let Some(error) = params.get("error") {
+        response = oauth_http_response("OAuth login failed.");
+        stream.write_all(response.as_bytes())?;
+        bail!("OpenAI OAuth login failed: {error}");
+    }
+    let code = params
+        .get("code")
+        .cloned()
+        .ok_or_else(|| anyhow!("OpenAI OAuth callback did not include a code"))?;
+    response = oauth_http_response("Login complete. You can close this tab.");
+    stream.write_all(response.as_bytes())?;
+    Ok(code)
+}
+
+fn oauth_http_response(message: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n<!doctype html><title>llm auth</title><p>{message}</p>"
+    )
+}
+
+fn ensure_openai_provider(provider: &str) -> Result<()> {
+    if provider != "openai" {
+        bail!("Only `openai` auth is supported currently");
     }
     Ok(())
 }

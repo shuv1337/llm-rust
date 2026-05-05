@@ -19,6 +19,8 @@ rustyline = "12"
 shell-words = "1.1"
 tempfile = { workspace = true }
 chrono = { workspace = true }
+url = { workspace = true }
+open = { workspace = true }
 
 [features]
 default = ["crossterm"]

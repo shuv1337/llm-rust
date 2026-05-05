@@ -238,6 +238,7 @@ impl PromptProvider for AnthropicProvider {
             },
             finish_reason,
             function_call: None,
+            metadata: None,
         })
     }
 

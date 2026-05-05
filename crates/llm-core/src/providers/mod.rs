@@ -551,6 +551,9 @@ pub struct PromptCompletion {
 
     /// Function call made by the model (deprecated, use tool_calls).
     pub function_call: Option<FunctionCall>,
+
+    /// Provider-supplied metadata that is safe to persist in logs.
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl PromptCompletion {
@@ -567,6 +570,7 @@ impl PromptCompletion {
             tool_calls: None,
             finish_reason: None,
             function_call: None,
+            metadata: None,
         }
     }
 
@@ -583,6 +587,7 @@ impl PromptCompletion {
             tool_calls: Some(tool_calls),
             finish_reason: Some(FinishReason::ToolCalls),
             function_call: None,
+            metadata: None,
         }
     }
 
@@ -698,6 +703,7 @@ mod tests {
                 tool_calls: None,
                 finish_reason: None,
                 function_call: None,
+                metadata: None,
             })
         }
     }
