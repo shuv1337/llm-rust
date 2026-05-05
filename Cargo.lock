@@ -959,7 +959,7 @@ checksum = "241eaef5fd12c88705a01fc1066c48c4b36e0dd4377dcdc7ec3942cea7a69956"
 
 [[package]]
 name = "llm-cli"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "llm-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "llm-embeddings"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "llm-plugin-api"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "llm-core",
@@ -1037,7 +1037,7 @@ dependencies = [
 
 [[package]]
 name = "llm-plugin-host"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "llm-core",
