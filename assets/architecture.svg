@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">LLM Rust architecture</title>
+  <desc id="desc">Component diagram showing prompts flowing through CLI parsing, tokenizer and request shaping, model provider dispatch, inference, streaming output, and logs.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#101828"/>
+      <stop offset="100%" stop-color="#172554"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="100%" stop-color="#e2e8f0"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#38bdf8"/>
+    </marker>
+    <style>
+      .title { fill: #f8fafc; font: 700 34px system-ui, sans-serif; }
+      .subtitle { fill: #cbd5e1; font: 500 18px system-ui, sans-serif; }
+      .label { fill: #0f172a; font: 700 21px system-ui, sans-serif; }
+      .small { fill: #334155; font: 500 15px system-ui, sans-serif; }
+      .code { fill: #dbeafe; font: 600 15px ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .box { fill: url(#card); stroke: #93c5fd; stroke-width: 2; rx: 18; }
+      .store { fill: #ecfeff; stroke: #22d3ee; stroke-width: 2; rx: 14; }
+      .plugin { fill: #fef3c7; stroke: #f59e0b; stroke-width: 2; rx: 14; }
+      .flow { stroke: #38bdf8; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+      .thin { stroke: #93c5fd; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1200" height="620" fill="url(#bg)"/>
+  <text x="70" y="70" class="title">LLM Rust request flow</text>
+  <text x="70" y="102" class="subtitle">Prompt input to tokenizer, provider dispatch, inference, output, and durable CLI state</text>
+
+  <rect x="70" y="165" width="180" height="116" class="box"/>
+  <text x="102" y="207" class="label">CLI input</text>
+  <text x="102" y="236" class="small">prompt, chat, cmd</text>
+  <text x="102" y="260" class="small">keys, logs, models</text>
+
+  <rect x="320" y="150" width="210" height="146" class="box"/>
+  <text x="352" y="193" class="label">Parser</text>
+  <text x="352" y="222" class="small">clap args</text>
+  <text x="352" y="246" class="small">template fragments</text>
+  <text x="352" y="270" class="small">attachments</text>
+
+  <rect x="610" y="150" width="230" height="146" class="box"/>
+  <text x="642" y="193" class="label">Tokenizer + request</text>
+  <text x="642" y="222" class="small">messages</text>
+  <text x="642" y="246" class="small">model options</text>
+  <text x="642" y="270" class="small">tool schemas</text>
+
+  <rect x="920" y="150" width="210" height="146" class="box"/>
+  <text x="952" y="193" class="label">Model provider</text>
+  <text x="952" y="222" class="small">OpenAI</text>
+  <text x="952" y="246" class="small">Anthropic</text>
+  <text x="952" y="270" class="small">plugins</text>
+
+  <rect x="320" y="385" width="210" height="122" class="store"/>
+  <text x="352" y="428" class="label">State stores</text>
+  <text x="352" y="457" class="small">keys.json</text>
+  <text x="352" y="481" class="small">logs.db, aliases</text>
+
+  <rect x="610" y="385" width="230" height="122" class="plugin"/>
+  <text x="642" y="428" class="label">Plugin registries</text>
+  <text x="642" y="457" class="small">models, commands</text>
+  <text x="642" y="481" class="small">templates, embeddings</text>
+
+  <rect x="920" y="385" width="210" height="122" class="box"/>
+  <text x="952" y="428" class="label">CLI output</text>
+  <text x="952" y="457" class="small">streaming text</text>
+  <text x="952" y="481" class="small">JSON, logs, usage</text>
+
+  <path d="M250 223 H320" class="flow"/>
+  <path d="M530 223 H610" class="flow"/>
+  <path d="M840 223 H920" class="flow"/>
+  <path d="M1025 296 V385" class="flow"/>
+  <path d="M920 446 H840" class="thin"/>
+  <path d="M610 446 H530" class="thin"/>
+  <path d="M425 385 V296" class="thin"/>
+  <path d="M725 385 V296" class="thin"/>
+
+  <text x="76" y="562" class="code">LLM_PROMPT_STUB=1 cargo run -- --no-stream "Explain Rust ownership in one sentence"</text>
+</svg>

@@ -112,6 +112,8 @@ cargo run -- logs off
 
 ## Architecture
 
+<img src="assets/architecture.svg" alt="LLM Rust tokenizer, model provider, inference, and output architecture" width="100%">
+
 The project is organized as a Cargo workspace:
 
 ```
@@ -121,6 +123,10 @@ llm-rust/
 ├── crates/llm-plugin-host  - Python plugin bridge
 └── crates/llm-embeddings   - Vector embeddings support
 ```
+
+## CLI Flow
+
+![LLM Rust prompt response flow](assets/cli-prompt-flow.gif)
 
 ## Configuration
 
